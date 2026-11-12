@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="insertion_service_label">VoiceType bubble typing</string>
+    <string name="insertion_service_summary">Types your dictation from the floating mic bubble into the focused text field.</string>
+    <string name="insertion_service_description">VoiceType uses this only to (1) find the text field that currently has focus and insert the text you dictated with the floating mic bubble, and (2) notice when the on-screen keyboard opens or closes so the bubble can hide. It does not read, store or send anything else on your screen. VoiceType has no internet permission, so nothing can leave your phone.</string>
+</resources>

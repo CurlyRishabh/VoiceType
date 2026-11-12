@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <PreferenceCategory app:title="Speech recognition">
+        <ListPreference
+            app:defaultValue="en"
+            app:entries="@array/language_entries"
+            app:entryValues="@array/language_values"
+            app:key="language"
+            app:title="Language"
+            app:useSimpleSummaryProvider="true" />
+        <ListPreference
+            app:defaultValue="fast_english"
+            app:entries="@array/engine_entries"
+            app:entryValues="@array/engine_values"
+            app:key="engine"
+            app:summary="Used when language is English. Hindi and auto-detect always use the Hindi + English model."
+            app:title="English engine" />
+        <ListPreference
+            app:defaultValue="latin"
+            app:entries="@array/script_entries"
+            app:entryValues="@array/script_values"
+            app:key="script"
+            app:title="Hindi output script"
+            app:useSimpleSummaryProvider="true" />
+        <SeekBarPreference
+            android:max="4000"
+            app:defaultValue="1500"
+            app:key="silence_ms"
+            app:min="500"
+            app:seekBarIncrement="100"
+            app:showSeekBarValue="true"
+            app:summary="Milliseconds of silence before recording stops automatically"
+            app:title="Auto-stop after silence" />
+        <Preference
+            app:key="models"
+            app:summary="Import or remove model files"
+            app:title="Models" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Clean-up (instant rules)">
+        <SwitchPreferenceCompat app:defaultValue="true" app:key="rule_fillers" app:summary="um, uh, standalone like, you know, matlab, haan toh" app:title="Remove filler words" />
+        <SwitchPreferenceCompat app:defaultValue="true" app:key="rule_corrections" app:summary="&quot;5 no wait 6&quot;, &quot;I mean&quot;, &quot;nahi nahi&quot; keep only the correction" app:title="Apply self-corrections" />
+        <SwitchPreferenceCompat app:defaultValue="true" app:key="rule_commands" app:summary="new line, new paragraph, comma, full stop, question mark" app:title="Spoken commands" />
+        <SwitchPreferenceCompat app:defaultValue="true" app:key="rule_capitalize" app:title="Auto-capitalise" />
+        <SwitchPreferenceCompat app:defaultValue="true" app:key="rule_final_punct" app:title="Add final punctuation" />
+        <Preference app:key="dictionary" app:summary="Names and words to always spell your way" app:title="Personal dictionary" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="AI polish (on-device)">
+        <SwitchPreferenceCompat
+            app:defaultValue="true"
+            app:key="polish_enabled"
+            app:summary="Fix grammar and punctuation with a small local LLM. Falls back to the instant rules after 3 s."
+            app:title="AI polish" />
+        <ListPreference
+            app:defaultValue="casual"
+            app:dependency="polish_enabled"
+            app:entries="@array/style_entries"
+            app:entryValues="@array/style_values"
+            app:key="polish_style"
+            app:title="Style"
+            app:useSimpleSummaryProvider="true" />
+        <SwitchPreferenceCompat
+            app:defaultValue="false"
+            app:dependency="polish_enabled"
+            app:key="polish_gpu"
+            app:summary="Try the Mali GPU. Faster on some phones; falls back to rules if it fails to load."
+            app:title="Use GPU" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Floating bubble">
+        <SwitchPreferenceCompat app:defaultValue="false" app:key="bubble_enabled" app:title="Show floating mic bubble" />
+        <ListPreference
+            app:defaultValue="toggle"
+            app:entries="@array/bubble_mode_entries"
+            app:entryValues="@array/bubble_mode_values"
+            app:key="bubble_mode"
+            app:title="Bubble mode"
+            app:useSimpleSummaryProvider="true" />
+        <SwitchPreferenceCompat
+            app:defaultValue="false"
+            app:key="bubble_hide_with_keyboard"
+            app:summary="Show the bubble only while a keyboard is open (needs the typing permission)"
+            app:title="Hide when keyboard is closed" />
+        <Preference app:key="setup" app:summary="Permissions, battery and OnePlus auto-launch" app:title="Setup wizard" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Privacy">
+        <SwitchPreferenceCompat app:defaultValue="true" app:key="history_enabled" app:summary="Stored only on this phone" app:title="Save transcript history" />
+        <Preference app:key="history" app:title="History" />
+        <Preference app:key="clear_history" app:summary="Deletes every saved transcript immediately" app:title="Clear all history" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Debug">
+        <SwitchPreferenceCompat
+            app:defaultValue="false"
+            app:key="keep_recordings"
+            app:summary="Off by default. Saves each dictation as a WAV in app-private storage for debugging."
+            app:title="Keep recordings" />
+        <Preference app:key="debug" app:summary="Real-time factor, load times, benchmark" app:title="Debug &amp; benchmark" />
+    </PreferenceCategory>
+</PreferenceScreen>

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="language_entries">
+        <item>English</item>
+        <item>Hindi</item>
+        <item>Auto-detect (Hindi + English / Hinglish)</item>
+    </string-array>
+    <string-array name="language_values">
+        <item>en</item>
+        <item>hi</item>
+        <item>auto</item>
+    </string-array>
+
+    <string-array name="engine_entries">
+        <item>Fast English (Moonshine Base)</item>
+        <item>Hindi + English (Whisper small)</item>
+    </string-array>
+    <string-array name="engine_values">
+        <item>fast_english</item>
+        <item>hindi_english</item>
+    </string-array>
+
+    <string-array name="script_entries">
+        <item>Latin (Hinglish: \"kal meeting hai\")</item>
+        <item>Devanagari (\"कल मीटिंग है\")</item>
+    </string-array>
+    <string-array name="script_values">
+        <item>latin</item>
+        <item>devanagari</item>
+    </string-array>
+
+    <string-array name="style_entries">
+        <item>Casual (chat)</item>
+        <item>Professional (email)</item>
+        <item>Notes (bullet points)</item>
+    </string-array>
+    <string-array name="style_values">
+        <item>casual</item>
+        <item>professional</item>
+        <item>notes</item>
+    </string-array>
+
+    <string-array name="bubble_mode_entries">
+        <item>Tap to start / stop</item>
+        <item>Hold to talk</item>
+    </string-array>
+    <string-array name="bubble_mode_values">
+        <item>toggle</item>
+        <item>hold</item>
+    </string-array>
+</resources>

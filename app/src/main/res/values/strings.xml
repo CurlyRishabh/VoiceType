@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">VoiceType</string>
+    <string name="ime_name">VoiceType voice keyboard</string>
+    <string name="recognizer_name">VoiceType offline speech</string>
+    <string name="subtype_en">English (voice)</string>
+    <string name="subtype_hi">Hindi + English (voice)</string>
+
+    <!-- Screens -->
+    <string name="setup_title">Set up VoiceType</string>
+    <string name="setup_intro">Private, offline voice typing. This app has no internet permission: nothing you say leaves this phone.</string>
+    <string name="settings_title">VoiceType settings</string>
+    <string name="explainer_title">Bubble typing permission</string>
+    <string name="models_title">Models</string>
+    <string name="dictionary_title">Personal dictionary</string>
+    <string name="history_title">History</string>
+    <string name="debug_title">Debug &amp; benchmark</string>
+
+    <!-- Keyboard -->
+    <string name="ime_tap_to_speak">Tap to speak · hold to talk</string>
+    <string name="ime_listening">Listening…</string>
+    <string name="ime_transcribing">Transcribing…</string>
+    <string name="ime_polishing">Polishing…</string>
+    <string name="ime_no_speech">Didn\'t catch that</string>
+    <string name="cd_mic">Dictate</string>
+    <string name="cd_backspace">Backspace</string>
+    <string name="cd_space">Space</string>
+    <string name="cd_enter">Enter</string>
+    <string name="cd_switch_keyboard">Switch keyboard</string>
+    <string name="cd_settings">Settings</string>
+
+    <!-- Bubble -->
+    <string name="bubble_channel">Voice bubble</string>
+    <string name="bubble_notification_title">Voice bubble is on</string>
+    <string name="bubble_notification_text">Tap the floating mic to dictate. Everything stays on this phone.</string>
+    <string name="bubble_turn_off">Turn off</string>
+    <string name="bubble_copied_no_service">Copied. Turn on VoiceType in Accessibility to type directly.</string>
+    <string name="bubble_copied_no_field">No text field focused. Copied to clipboard.</string>
+    <string name="bubble_copied_failed">This app blocked typing. Copied to clipboard.</string>
+    <string name="bubble_no_overlay">Allow \"Display over other apps\" for VoiceType first.</string>
+
+    <!-- Setup steps -->
+    <string name="step_mic_title">1. Microphone</string>
+    <string name="step_mic_desc">Needed to hear you. Audio is processed on this phone and discarded right after transcription. Notifications let the bubble show its low-priority status notification.</string>
+    <string name="step_models_title">2. Import models</string>
+    <string name="step_models_desc">Copy the model files to this phone from your computer, then import them here. The app can\'t download anything: it has no internet permission.</string>
+    <string name="step_kb_enable_title">3. Enable the VoiceType keyboard</string>
+    <string name="step_kb_enable_desc">Turn on \"VoiceType voice keyboard\" in the list. Android shows a generic warning that keyboards can collect what you type; VoiceType has no internet access, so nothing can leave the phone.</string>
+    <string name="step_kb_select_title">4. Switch to it (optional)</string>
+    <string name="step_kb_select_desc">Pick VoiceType when you want to dictate, or keep your usual keyboard and use the bubble or its mic key.</string>
+    <string name="step_overlay_title">5. Floating bubble: display over other apps</string>
+    <string name="step_overlay_desc">Lets the mic bubble float above other apps, like Wispr Flow.</string>
+    <string name="step_a11y_title">6. Floating bubble: typing permission</string>
+    <string name="step_a11y_desc">Lets the bubble put text into the field you\'re typing in. Read what it does (and doesn\'t do) first.</string>
+    <string name="step_battery_title">7. Battery: Unrestricted</string>
+    <string name="step_battery_desc">OxygenOS closes background apps aggressively. Allow VoiceType to run unrestricted so the bubble isn\'t killed. On OnePlus: App info → Battery usage → select \"Unrestricted\" (or \"Allow background activity\").</string>
+    <string name="step_autolaunch_title">8. Auto-launch (OnePlus)</string>
+    <string name="step_autolaunch_desc">Lets the bubble come back after a reboot. On OxygenOS 13+: App info → Battery usage → \"Allow auto launch\", or Settings → Apps → Auto launch → VoiceType. Also lock VoiceType in Recents (open Recents, tap the app\'s ⋮ menu → Lock).</string>
+    <string name="step_test_title">10. Try it</string>
+    <string name="step_test_hint">Tap here, then use the VoiceType keyboard or the bubble…</string>
+
+    <string name="action_grant">Grant</string>
+    <string name="action_open">Open</string>
+    <string name="action_import">Import models</string>
+    <string name="action_choose">Choose keyboard</string>
+    <string name="action_allow">Allow</string>
+    <string name="action_review">Review &amp; enable</string>
+    <string name="action_app_battery">App battery settings</string>
+    <string name="action_open_settings">Settings</string>
+    <string name="status_done">Done</string>
+    <string name="status_todo">To do</string>
+    <string name="status_manual">Check manually</string>
+    <string name="bubble_switch">Show floating mic bubble</string>
+
+    <!-- Accessibility explainer -->
+    <string name="explainer_body">The floating bubble needs Android\'s Accessibility permission to type into other apps. Here is exactly what VoiceType does with it:\n\n<b>What it does</b>\n• Finds the text field that currently has focus, and inserts the text you just dictated at your cursor (keeping what was already there).\n• Notices when the on-screen keyboard opens or closes, so the bubble can hide.\n\n<b>What it does not do</b>\n• It does not read, log or store anything else on your screen.\n• It cannot send anything anywhere: VoiceType has no internet permission at all. You can verify this in Settings → Apps → VoiceType → Permissions, and the app works in airplane mode.\n\n<b>How to turn it on</b>\nTap the button below, choose \"Installed apps\" (or \"Downloaded apps\"), tap \"VoiceType bubble typing\" and switch it on.\n\nIf the switch is greyed out (Android 13+ \"restricted setting\" for apps not installed from a store): open Settings → Apps → VoiceType, tap ⋮ in the top-right corner → \"Allow restricted settings\", then come back and try again.\n\nYou don\'t need this if you only use the VoiceType keyboard.</string>
+    <string name="explainer_open">Open Accessibility settings</string>
+    <string name="explainer_app_info">App info (Allow restricted settings)</string>
+
+    <!-- Models -->
+    <string name="models_intro">Import each model once from files you copied to this phone (for example to Downloads/VoiceType). Select ALL files of a model at once in the picker. See README → \"Models\" for the exact files.</string>
+    <string name="models_ready">Ready · %1$s</string>
+    <string name="models_missing">Missing. Needs: %1$s</string>
+    <string name="models_import">Import</string>
+    <string name="models_delete">Delete</string>
+    <string name="models_importing">Importing %1$s…</string>
+    <string name="models_required">Required</string>
+    <string name="models_optional">Optional</string>
+
+    <!-- Dictionary -->
+    <string name="dictionary_add">Add word</string>
+    <string name="dictionary_from">When I say (e.g. acme)</string>
+    <string name="dictionary_to">Write (e.g. Acme)</string>
+    <string name="dictionary_empty">No entries yet. Add names, brands and jargon the recogniser gets wrong.</string>
+    <string name="dictionary_delete_q">Delete this entry?</string>
+
+    <!-- History -->
+    <string name="history_clear">Clear all</string>
+    <string name="history_cleared">History cleared</string>
+    <string name="history_empty">Nothing here yet. History is stored only on this phone.</string>
+    <string name="history_copied">Copied</string>
+
+    <!-- Debug -->
+    <string name="debug_benchmark">Record 5 s and benchmark</string>
+    <string name="debug_recording">Recording 5 s… speak now</string>
+    <string name="debug_clear_recordings">Delete kept recordings</string>
+    <string name="debug_refresh">Refresh</string>
+
+    <string name="ok">OK</string>
+    <string name="cancel">Cancel</string>
+    <string name="delete">Delete</string>
+</resources>

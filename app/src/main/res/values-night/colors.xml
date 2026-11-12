@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="kb_background">#1C1F22</color>
+    <color name="kb_key">#2E3236</color>
+    <color name="kb_key_text">#ECEFF1</color>
+</resources>

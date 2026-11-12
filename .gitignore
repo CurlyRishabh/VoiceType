@@ -1,0 +1,27 @@
+*.iml
+.gradle/
+.kotlin/
+/local.properties
+/.idea/
+.DS_Store
+build/
+/captures
+.externalNativeBuild
+.cxx
+# Large third-party binary; fetched + checksum-verified by scripts/fetch-sherpa-aar.sh
+/third_party/maven/**/*.aar
+# Never commit model files
+*.onnx
+*.ort
+*.litertlm
+*.task
+
+# Downloaded model files (copied to the phone, never committed)
+/models/
+/VoiceTypeModels.zip
+
+# macOS app build outputs and vendored binaries
+/mac/.build/
+/mac/build/
+/mac/vendor/
+*.dmg

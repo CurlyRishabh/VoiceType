@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="brand">#3D5AFE</color>
+    <color name="recording">#E53935</color>
+    <color name="busy">#FB8C00</color>
+    <color name="ok_green">#2E7D32</color>
+    <color name="todo_grey">#9E9E9E</color>
+    <color name="kb_background">#ECEFF1</color>
+    <color name="kb_key">#FFFFFF</color>
+    <color name="kb_key_text">#263238</color>
+    <color name="ic_launcher_background">#3D5AFE</color>
+</resources>

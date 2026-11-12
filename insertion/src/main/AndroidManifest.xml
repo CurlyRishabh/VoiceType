@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- Used only by the floating mic bubble: finds the focused text field and inserts the
+             dictated text. It never reads screen content beyond the focused editable field and
+             has no network access (the app declares no INTERNET permission). -->
+        <service
+            android:name=".InsertionAccessibilityService"
+            android:exported="false"
+            android:label="@string/insertion_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/insertion_accessibility_config" />
+        </service>
+    </application>
+</manifest>
