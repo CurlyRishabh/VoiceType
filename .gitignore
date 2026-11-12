@@ -25,3 +25,6 @@ build/
 /mac/build/
 /mac/vendor/
 *.dmg
+
+# local configuration files
+.claude
