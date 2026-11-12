@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
+    <key>CFBundleExecutable</key><string>VoiceType</string>
+    <key>CFBundleIdentifier</key><string>dev.offline.voicetype.mac</string>
+    <key>CFBundleName</key><string>VoiceType</string>
+    <key>CFBundleDisplayName</key><string>VoiceType</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key><string>15.0</string>
+    <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
+    <!-- Menu-bar app: no Dock icon -->
+    <key>LSUIElement</key><true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>VoiceType turns your speech into text on this Mac. Audio is processed locally and discarded after transcription; the app has no network access.</string>
+    <key>NSHumanReadableCopyright</key><string>Private, offline dictation. Personal build.</string>
+</dict>
+</plist>
