@@ -1,9 +1,59 @@
-# VoiceType: private, offline voice typing for Android
+# VoiceType: free, private, offline voice typing for Android and Mac
 
-A Wispr Flow–style dictation app for a personal phone (built for a **OnePlus 10R**, Dimensity 8100,
-8–12 GB RAM, OxygenOS, Android 12+). Everything runs on the phone: speech recognition, clean-up,
-and the optional AI polish. **The app has no internet permission**, so nothing you say can leave
-the device.
+## What is this?
+
+VoiceType lets you **talk instead of type** in any app. Press a key or tap a mic and speak. It
+turns your speech into clean, punctuated text: filler words removed, self-corrections applied
+("at 5, no wait, 6" → "at 6"), with optional AI polish. The text goes straight into whatever you're
+typing in.
+
+It's a **free, self-hosted alternative to paid dictation subscriptions like Wispr Flow** and
+similar AI voice-typing tools. Those typically process your audio on their cloud servers and charge a
+monthly fee. VoiceType runs **entirely on your own device**:
+
+| | Typical paid cloud dictation apps | VoiceType |
+|---|---|---|
+| Cost | Monthly subscription | Free; you build it yourself |
+| Where your voice goes | Usually processed on their servers | Never leaves your phone / Mac |
+| Internet needed | Yes | No; works in airplane mode |
+| Account / sign-in | Required | None |
+| Privacy guarantee | Their privacy policy | Enforced by the OS: the apps have **no network permission at all** |
+| Languages | Varies | English, Hindi, Hinglish (Latin or Devanagari) |
+
+Speech recognition uses open-source models (Moonshine and Whisper via sherpa-onnx). The optional
+AI polish uses a small on-device LLM (Gemma via LiteRT-LM on Android, Apple Intelligence's
+on-device model on Mac).
+
+## What's in this repo
+
+| App | What you get | How to build it | Docs |
+|---|---|---|---|
+| **Android** (`.apk`) | Voice keyboard + floating mic bubble that types into any app | `./gradlew assembleRelease` → `app/build/outputs/apk/release/app-release.apk` | This file, §1–§10 below |
+| **macOS** (`.dmg`) | Menu-bar app: press **⌥ Space**, speak, and the text is pasted into the focused app | `mac/scripts/build-dmg.sh` → `mac/build/VoiceType.dmg` | [`mac/README.md`](mac/README.md) |
+
+The built `.apk` / `.dmg` files and the speech models aren't committed to git (they're large).
+Build the apps from source, then download the models once (§4) and import them into the app.
+
+**Requirements:** Android 12+ on an arm64 phone (built and tuned for a OnePlus 10R), or macOS 15+
+(Apple silicon recommended; AI polish on Mac needs macOS 26 with Apple Intelligence).
+
+### Quick start
+
+1. **Get the models** on your computer (§4): Silero VAD + Moonshine (English) and/or Whisper
+   (Hindi + English).
+2. **Android:** build the APK (§2), `adb install` it (§3), copy the models to the phone and import
+   them, then follow the setup wizard (§5).
+3. **Mac:** run `mac/scripts/build-dmg.sh`, open the DMG, drag VoiceType to Applications, then
+   import the models folder from the Setup tab.
+4. Start talking: tap the mic (Android) or press ⌥ Space (Mac).
+
+---
+
+# Android app
+
+Built for a personal phone (**OnePlus 10R**, Dimensity 8100, 8–12 GB RAM, OxygenOS, Android 12+).
+Everything runs on the phone: speech recognition, clean-up, and the optional AI polish. **The app
+has no internet permission**, so nothing you say can leave the device.
 
 * **Voice keyboard**: big mic (tap = auto-stop on silence, hold = push-to-talk), live level meter,
   backspace, space, enter, switch-keyboard.
@@ -14,10 +64,6 @@ the device.
 * **Clean-up**: filler removal, self-corrections ("5 no wait 6"), spoken commands, capitalisation,
   personal dictionary, then optional on-device LLM polish (Casual / Professional / Notes) with a hard
   3 s timeout.
-
-> **Mac version:** `mac/` contains a native macOS menu-bar version of the same app (same rules,
-> same models, sandboxed with no network entitlement). See [`mac/README.md`](mac/README.md);
-> `mac/scripts/build-dmg.sh` builds `mac/build/VoiceType.dmg`.
 
 ---
 
@@ -261,3 +307,14 @@ benchmark** runs every imported engine on the same clip. Logs: `adb logcat -s Sp
   Whisper small's Hindi accuracy is still modest; large-v3-turbo is much better but too heavy for the phone.
 * **Polish latency:** the 3 s limit is strict by design. The debug screen shows how often it
   falls back. Gemma 3 1B int4 is the best fit; try *Use GPU* if CPU is too slow.
+
+---
+
+## License
+
+VoiceType's own code is released under the [MIT License](LICENSE).
+
+The speech models and libraries it uses are downloaded separately and keep their own licenses:
+sherpa-onnx, LiteRT-LM and AndroidX (Apache-2.0); Moonshine, Whisper and Silero VAD (MIT);
+Qwen2.5 (Apache-2.0); Gemma (the [Gemma Terms of Use](https://ai.google.dev/gemma/terms)). Wispr Flow
+is a trademark of its owner; VoiceType isn't affiliated with it.
