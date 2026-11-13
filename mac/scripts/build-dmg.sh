@@ -27,6 +27,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resourc
 cp "$(swift build -c release --arch arm64 --show-bin-path)/VoiceType" "$APP/Contents/MacOS/VoiceType"
 cp vendor/sherpa-onnx/lib/libsherpa-onnx-c-api.dylib vendor/sherpa-onnx/lib/libonnxruntime.dylib "$APP/Contents/Frameworks/"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/THIRD_PARTY_NOTICES.txt "$APP/Contents/Resources/THIRD_PARTY_NOTICES.txt"
 
 # App icon
 ICONSET="$OUT/AppIcon.iconset"
@@ -57,6 +58,7 @@ mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/"
 ln -s /Applications "$STAGE/Applications"
 cp README.md "$STAGE/Read Me.md"
+cp Resources/THIRD_PARTY_NOTICES.txt "$STAGE/Third-Party Notices.txt"
 hdiutil create -volname "VoiceType" -srcfolder "$STAGE" -ov -format UDZO "$OUT/VoiceType.dmg" >/dev/null
 rm -rf "$STAGE" "$ICONSET"
 echo "==> done: $OUT/VoiceType.dmg ($(du -h "$OUT/VoiceType.dmg" | cut -f1))"

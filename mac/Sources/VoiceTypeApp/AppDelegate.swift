@@ -20,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let onboardingModel = OnboardingModel()
     private var mainWindow: NSWindow?
     private var onboardingWindow: NSWindow?
+    private var licensesWindow: NSWindow?
     private var lastText: String?
     private var lastApp: String?
 
@@ -269,6 +270,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         onboardingModel.refresh += 1
         NSApp.activate(ignoringOtherApps: true)
         onboardingWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Third-party notices shipped in the app bundle (Contents/Resources/THIRD_PARTY_NOTICES.txt).
+    func showLicenses() {
+        if licensesWindow == nil {
+            let text = Bundle.main.url(forResource: "THIRD_PARTY_NOTICES", withExtension: "txt")
+                .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+                ?? "THIRD_PARTY_NOTICES.txt is missing from this build. Build with scripts/build-dmg.sh to include it."
+            let scroll = NSTextView.scrollableTextView()
+            let tv = scroll.documentView as! NSTextView
+            tv.isEditable = false
+            tv.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+            tv.textContainerInset = NSSize(width: 12, height: 12)
+            tv.string = text
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 620),
+                             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            w.title = "Open-source licences"
+            w.contentView = scroll
+            w.isReleasedWhenClosed = false
+            w.center()
+            licensesWindow = w
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        licensesWindow?.makeKeyAndOrderFront(nil)
     }
 
     func finishOnboarding() {

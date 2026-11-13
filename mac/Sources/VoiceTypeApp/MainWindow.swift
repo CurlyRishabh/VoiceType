@@ -496,6 +496,15 @@ private struct SettingsPane: View {
                 Toggle("Keep recordings (debug, off by default)", isOn: $keepRecordings)
                 Text("Network: blocked by the App Sandbox. VoiceType has no network entitlement.").font(.caption).foregroundColor(.secondary)
             }
+            Section("About") {
+                HStack {
+                    Text("VoiceType \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev")")
+                    Spacer()
+                    Button("Open-source licences") { app.showLicenses() }
+                }
+                Text("Speech recognition by sherpa-onnx and ONNX Runtime. Models you import (Moonshine, Whisper, Silero VAD) are MIT-licensed.")
+                    .font(.caption).foregroundColor(.secondary)
+            }
             Section("Performance") {
                 Text("Loaded: \(app.speech.loadedSpec.map { "\($0.kind.rawValue) \($0.language.isEmpty ? "auto" : $0.language)" } ?? "none") · \(EngineSpec(kind: .fastEnglish, language: "en").threads) threads · AI polish: \(app.polisher.statusText)")
                     .font(.caption)
