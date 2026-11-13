@@ -45,6 +45,10 @@ final class SpeechHost {
     /// `audioMillis` is the real recording length (chunks may be silence-padded for Whisper).
     func transcribe(_ spec: EngineSpec, chunks: [[Float]], audioMillis: Int, completion: @escaping (Result<Transcript, Error>) -> Void) {
         queue.async {
+            if chunks.isEmpty { // barrier: runs after every job queued before it
+                completion(.success(Transcript(text: "", audioMillis: 0, decodeMillis: 0, loadMillis: 0, spec: spec)))
+                return
+            }
             do {
                 let load = try self.ensureLoaded(spec)
                 let start = DispatchTime.now()

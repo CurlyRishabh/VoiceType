@@ -24,6 +24,26 @@ Speech recognition uses open-source models (Moonshine and Whisper via sherpa-onn
 AI polish uses a small on-device LLM (Gemma via LiteRT-LM on Android, Apple Intelligence's
 on-device model on Mac).
 
+## Download
+
+Ready-made builds are on the [**Releases page**](https://github.com/CurlyRishabh/VoiceType/releases/latest).
+These links always point to the newest version:
+
+| | Download | Then |
+|---|---|---|
+| **Android** (12+, arm64) | [**VoiceType.apk**](https://github.com/CurlyRishabh/VoiceType/releases/latest/download/VoiceType.apk) (~58 MB) | Open it on the phone and allow "Install unknown apps", or `adb install VoiceType.apk`. Then follow §5. |
+| **macOS** (15+) | [**VoiceType.dmg**](https://github.com/CurlyRishabh/VoiceType/releases/latest/download/VoiceType.dmg) (~11 MB) | Open the DMG and drag VoiceType to Applications. See [`mac/README.md`](mac/README.md). |
+| **Speech models** (both apps) | [**VoiceTypeModels.zip**](https://github.com/CurlyRishabh/VoiceType/releases/latest/download/VoiceTypeModels.zip) (~660 MB) | Unzip, then import the folders in the app (§4). Contains Silero VAD, Moonshine (English) and Whisper small (Hindi + English). |
+
+The apps aren't from an app store, so you'll see an expected warning the first time:
+
+* **Mac:** the app is ad-hoc signed, not notarized. If macOS says it can't verify the developer, go
+  to **System Settings → Privacy & Security → Open Anyway**, or right-click the app → **Open**.
+* **Android:** sideloaded APKs land behind Android 13+'s "restricted settings" for Accessibility.
+  See step 6 in §5 for how to allow it.
+
+You can also build both apps yourself from source (below) instead of downloading them.
+
 ## What's in this repo
 
 | App | What you get | How to build it | Docs |
@@ -32,19 +52,20 @@ on-device model on Mac).
 | **macOS** (`.dmg`) | Menu-bar app: press **⌥ Space**, speak, and the text is pasted into the focused app | `mac/scripts/build-dmg.sh` → `mac/build/VoiceType.dmg` | [`mac/README.md`](mac/README.md) |
 
 The built `.apk` / `.dmg` files and the speech models aren't committed to git (they're large).
-Build the apps from source, then download the models once (§4) and import them into the app.
+Download them from the [Releases page](#download), or build the apps from source and fetch the
+models yourself (§4).
 
 **Requirements:** Android 12+ on an arm64 phone (built and tuned for a OnePlus 10R), or macOS 15+
 (Apple silicon recommended; AI polish on Mac needs macOS 26 with Apple Intelligence).
 
 ### Quick start
 
-1. **Get the models** on your computer (§4): Silero VAD + Moonshine (English) and/or Whisper
-   (Hindi + English).
-2. **Android:** build the APK (§2), `adb install` it (§3), copy the models to the phone and import
-   them, then follow the setup wizard (§5).
-3. **Mac:** run `mac/scripts/build-dmg.sh`, open the DMG, drag VoiceType to Applications, then
-   import the models folder from the Setup tab.
+1. **Get the models:** download [`VoiceTypeModels.zip`](#download) and unzip it, or fetch them
+   yourself (§4): Silero VAD + Moonshine (English) and/or Whisper (Hindi + English).
+2. **Android:** [download the APK](#download) (or build it, §2), install it (§3), copy the models
+   to the phone and import them, then follow the setup wizard (§5).
+3. **Mac:** [download the DMG](#download) (or run `mac/scripts/build-dmg.sh`), open it, drag
+   VoiceType to Applications, then import the models folder from the Setup tab.
 4. Start talking: tap the mic (Android) or press ⌥ Space (Mac).
 
 ---

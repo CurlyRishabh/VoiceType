@@ -15,6 +15,10 @@ enum Key {
     static let history = "history_enabled", keepRecordings = "keep_recordings"
     static let dictionary = "dictionary"
     static let showHUD = "show_hud"
+    static let trigger = "trigger"              // fn | right_option | option_space
+    static let flowBarIdle = "flow_bar_idle"    // show the idle sliver
+    static let onboardingDone = "onboarding_done"
+    static func style(_ c: AppCategory) -> String { "style_\(c.rawValue)" }
 }
 
 enum AppSettings {
@@ -26,7 +30,14 @@ enum AppSettings {
             Key.silenceMs: 1500, Key.fillers: true, Key.corrections: true, Key.commands: true,
             Key.capitalize: true, Key.finalPunct: true, Key.polish: true, Key.polishStyle: "casual",
             Key.hotkey: 0, Key.history: true, Key.keepRecordings: false, Key.showHUD: true,
+            Key.trigger: "fn", Key.flowBarIdle: true, Key.onboardingDone: false,
+            Key.style(.messages): StyleChoice.casual.rawValue, Key.style(.email): StyleChoice.formal.rawValue,
+            Key.style(.notes): StyleChoice.notes.rawValue, Key.style(.other): StyleChoice.off.rawValue,
         ])
+    }
+
+    static func styleChoice(_ c: AppCategory) -> StyleChoice {
+        StyleChoice(rawValue: d.string(forKey: Key.style(c)) ?? "") ?? AppStyleMap.defaultChoice(c)
     }
 
     static var engineSpec: EngineSpec {
@@ -42,7 +53,8 @@ enum AppSettings {
         set { d.set(newValue.serialize(), forKey: Key.dictionary) }
     }
 
-    static func cleanup(startsSentence: Bool, endsSentence: Bool, polishAvailable: Bool) -> CleanupSettings {
+    /// `style` comes from the app being typed in (Styles screen); nil = instant rules only.
+    static func cleanup(startsSentence: Bool, endsSentence: Bool, polishAvailable: Bool, style: PolishStyle?) -> CleanupSettings {
         var o = CleanupOptions()
         o.removeFillers = d.bool(forKey: Key.fillers)
         o.applySelfCorrections = d.bool(forKey: Key.corrections)
@@ -54,8 +66,8 @@ enum AppSettings {
         var s = CleanupSettings()
         s.options = o
         s.script = OutputScript(rawValue: d.string(forKey: Key.script) ?? "") ?? .latin
-        s.polishEnabled = d.bool(forKey: Key.polish) && polishAvailable
-        s.polishStyle = PolishStyle(rawValue: d.string(forKey: Key.polishStyle) ?? "") ?? .casual
+        s.polishEnabled = d.bool(forKey: Key.polish) && polishAvailable && style != nil
+        s.polishStyle = style ?? .casual
         return s
     }
 }
@@ -130,6 +142,11 @@ final class HistoryStore: ObservableObject {
         let raw: String
         let engine: String
         let polished: Bool
+        // Added with the redesign; optional so older history files still load.
+        var app: String? = nil
+        var style: String? = nil
+        var audioMillis: Int? = nil
+        var handsFree: Bool? = nil
     }
 
     @Published private(set) var items: [Item] = []

@@ -18,12 +18,14 @@ final class Recorder {
 
     var onLevel: ((Float) -> Void)?
     var onAutoStop: ((StopReason) -> Void)?
+    /// A finished VAD speech segment (main thread). Used to transcribe long dictations while they happen.
+    var onSegment: ((Segment) -> Void)?
 
     /// Can be switched off mid-recording (tap became a hold).
     var autoStop = true
     var silenceMillis = 1500
     let noSpeechTimeoutMillis = 8000
-    let maxDurationMillis = 5 * 60_000
+    var maxDurationMillis = 5 * 60_000
 
     private let engine = AVAudioEngine()
     private let queue = DispatchQueue(label: "recorder", qos: .userInteractive)
@@ -74,6 +76,14 @@ final class Recorder {
         }
     }
 
+    /// Copy of already-captured audio, e.g. to transcribe the first minutes of a hands-free session.
+    func snapshot(_ range: Range<Int>) -> [Float] {
+        queue.sync {
+            let r = max(0, range.lowerBound)..<min(samples.count, range.upperBound)
+            return r.isEmpty ? [] : Array(samples[r])
+        }
+    }
+
     func cancel() {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
@@ -116,7 +126,11 @@ final class Recorder {
             vad.accept(chunk)
             let speech = vad.isSpeech
             if speech { speechSeen = true; silentSamples = 0 } else if speechSeen { silentSamples += chunk.count }
-            segments += vad.drain()
+            let finished = vad.drain()
+            segments += finished
+            if !finished.isEmpty, let cb = onSegment {
+                DispatchQueue.main.async { finished.forEach(cb) }
+            }
             if autoStop {
                 let silentMs = silentSamples * 1000 / sampleRate + Int(SherpaVAD.minSilence * 1000)
                 if speechSeen && !speech && silentMs >= silenceMillis { finish(.silence); return }

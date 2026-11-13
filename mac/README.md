@@ -16,6 +16,7 @@ the Android app), and optional AI polish with Apple's **on-device** model. The a
    * **Microphone**: click *Allow…*.
    * **Accessibility (auto-paste)**: click *Allow…*, then switch **VoiceType** on in the list.
      Without it, dictated text is copied and you press ⌘V yourself.
+   * **Input Monitoring** for the fn key, and macOS's "Press 🌐 key to" set to **Do Nothing**.
    * **Models → Import models folder…**: choose the `models` folder that has `vad/`, `moonshine/`
      and `whisper/` inside (for example `voiceapk/models`). The files are copied into the app's
      private container, so the original folder can be deleted afterwards.
@@ -25,14 +26,34 @@ the Android app), and optional AI polish with Apple's **on-device** model. The a
 
 ## Use
 
-* Press **⌥ Space** (change it in Settings → Dictation): **tap** to start, then it stops
-  automatically after 1.5 s of silence (or tap again). **Hold** for push-to-talk.
-* A small pill at the bottom of the screen shows your voice level, then "Transcribing…" /
-  "Polishing…". The text is pasted into the focused app and your clipboard is restored.
-* Same features as on the phone: filler removal, self-corrections ("at 5 no wait 6"), spoken
-  commands ("new line", "new paragraph", "comma", "full stop", "question mark"), personal
-  dictionary, Hindi / Hinglish with Latin or Devanagari output, history (local only, *Clear all*),
-  and AI polish styles (Casual / Professional / Notes).
+| Do this | What happens |
+|---|---|
+| **Hold fn** and talk | Records while you hold, through pauses. Release and the text is typed. |
+| **Double-tap fn** | Hands-free: keeps listening until you **tap fn** again (or click ■ on the flow bar). |
+| **esc** (or ✕) | Cancels; nothing is typed. |
+| **fn + another key** | Works as normal (fn+arrows, F-keys); dictation ignores it. |
+
+* The **flow bar** at the bottom of the screen shows what's happening: a small sliver when idle
+  (click it to open VoiceType), level bars while you talk, a lock and timer in hands-free mode,
+  "Typing…", or a one-line notice with a **Fix** button.
+* Long hands-free dictations are transcribed sentence by sentence while you talk, so the text is
+  ready almost as soon as you stop (limit: 15 minutes; holding: 5 minutes).
+* **Styles** pick the AI-polish tone from the app you're typing in: Messages/Slack/WhatsApp →
+  Casual, Mail/Outlook → Formal, Notes/Obsidian/Notion → bullet Notes, everything else → instant
+  rules only. Change any of them in VoiceType → Styles.
+* The **menu bar** icon has the last dictation (**Paste again** / Copy), language, the style for the
+  current app, "Start hands-free dictation", and "Pause fn for 1 hour".
+* No fn key (most external keyboards)? Settings → Dictation key → **Right ⌥**, or **⌥ Space**
+  (⌥ Space needs no Input Monitoring permission).
+
+**One-time setup for fn:** System Settings → Keyboard → "Press 🌐 key to" → **Do Nothing**
+(otherwise macOS also opens the emoji picker on every press), and allow VoiceType under
+Privacy & Security → **Input Monitoring**. It uses a listen-only key tap: it can't block or change
+keys and only reacts to fn and esc.
+
+Same clean-up as on the phone: filler removal, self-corrections ("at 5 no wait 6"), spoken
+commands ("new line", "comma", "question mark"…), personal dictionary, Hindi / Hinglish with Latin
+or Devanagari output, local-only history.
 
 ## Models
 
