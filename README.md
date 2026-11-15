@@ -1,5 +1,7 @@
 # VoiceType: free, private, offline voice typing for Android and Mac
 
+![VoiceType demo: hold fn, speak, release, and clean text is typed into the app you're in](demo/voicetype-demo.gif)
+
 ## What is this?
 
 VoiceType lets you **talk instead of type** in any app. Press a key or tap a mic and speak. It
