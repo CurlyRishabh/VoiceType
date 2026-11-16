@@ -60,8 +60,18 @@ final class Dictation {
 
     var isRecording: Bool { recorder != nil }
 
+    /// Decode chunks for the current engine (the sherpa-onnx Whisper token workaround is skipped for whisper.cpp).
+    private func plan(_ samples: [Float], _ segments: [Segment]?) -> [[Float]] {
+        let whisper = spec.kind == .hindiEnglish
+        let cpp = Recognizers.whisperCppModel(spec, modelsRoot: models.root) != nil
+        return DecodePlan.chunks(samples: samples, segments: segments, whisper: whisper, language: spec.language, tokenBudget: !cpp)
+    }
+
+    /// The Dictionary's spellings, given to whisper.cpp so it hears those names correctly.
+    private var vocabularyPrompt: String? { WhisperPrompt.build(AppSettings.dictionary.entries.map(\.to)) }
+
     func warmUp() {
-        speech.warmUp(AppSettings.engineSpec)
+        speech.warmUp(AppSettings.engineSpec(models))
         if UserDefaults.standard.bool(forKey: Key.polish) { polisher.warmUp() }
     }
 
@@ -69,7 +79,7 @@ final class Dictation {
     @discardableResult
     func begin() -> Bool {
         guard state == .idle, recorder == nil else { return false }
-        spec = AppSettings.engineSpec
+        spec = AppSettings.engineSpec(models)
         let slot: ModelSlot = spec.kind == .fastEnglish ? .moonshine : .whisper
         guard models.isReady(slot) else { onMessage?("Speech model not imported"); return false }
 
@@ -146,7 +156,6 @@ final class Dictation {
         let gen = generation
         let captured = rec.stop()
         let spec = self.spec
-        let whisper = spec.kind == .hindiEnglish
 
         // Only the part not already transcribed in the background is left.
         let start = min(decodedUpTo, captured.samples.count)
@@ -166,7 +175,7 @@ final class Dictation {
         if UserDefaults.standard.bool(forKey: Key.keepRecordings) { saveRecording(captured.samples) }
 
         let chunks = (restSegments?.isEmpty ?? false) ? [] :
-            DecodePlan.chunks(samples: rest, segments: restSegments, whisper: whisper, language: spec.language)
+            plan(rest, restSegments)
         let speechMs = captured.speechMillis
         let audioMs = captured.durationMillis
         let collect: (String) -> Void = { [weak self] tail in
@@ -180,7 +189,7 @@ final class Dictation {
             speech.transcribe(spec, chunks: [], audioMillis: 0) { _ in DispatchQueue.main.async { collect("") } }
             return
         }
-        speech.transcribe(spec, chunks: chunks, audioMillis: rest.count * 1000 / sampleRate) { [weak self] result in
+        speech.transcribe(spec, chunks: chunks, audioMillis: rest.count * 1000 / sampleRate, prompt: vocabularyPrompt) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let t): collect(t.text)
@@ -200,8 +209,8 @@ final class Dictation {
         let index = partials.count
         partials.append(nil)
         let gen = generation
-        let chunks = DecodePlan.chunks(samples: samples, segments: nil, whisper: spec.kind == .hindiEnglish, language: spec.language)
-        speech.transcribe(spec, chunks: chunks, audioMillis: samples.count * 1000 / sampleRate) { [weak self] result in
+        let chunks = plan(samples, nil)
+        speech.transcribe(spec, chunks: chunks, audioMillis: samples.count * 1000 / sampleRate, prompt: vocabularyPrompt) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self, gen == self.generation, index < self.partials.count else { return }
                 if case .success(let t) = result { self.partials[index] = t.text } else { self.partials[index] = "" }

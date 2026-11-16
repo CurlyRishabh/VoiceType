@@ -72,9 +72,12 @@ struct MainView: View {
 private struct ModelCard: View {
     let app: AppDelegate
     var body: some View {
-        let spec = AppSettings.engineSpec
+        let spec = AppSettings.engineSpec(app.models)
         let name: String = {
             guard spec.kind == .hindiEnglish else { return "Moonshine Base" }
+            if let cpp = Recognizers.whisperCppModel(spec, modelsRoot: app.models.root) {
+                return "Whisper \(ModelLayout.whisperCppName(cpp)) · GPU"
+            }
             let isTurbo = app.models.files(.whisper).contains { $0.lastPathComponent.hasPrefix("turbo") }
             return isTurbo ? "Whisper turbo" : "Whisper small"
         }()
@@ -414,7 +417,7 @@ private struct SettingsPane: View {
     @ObservedObject var model: MainModel
     @AppStorage(Key.trigger) var trigger = TriggerKey.fn.rawValue
     @AppStorage(Key.language) var language = "en"
-    @AppStorage(Key.englishEngine) var engine = EngineKind.fastEnglish.rawValue
+    @AppStorage(Key.englishEngine) var engine = EngineKind.hindiEnglish.rawValue
     @AppStorage(Key.script) var script = "latin"
     @AppStorage(Key.fillers) var fillers = true
     @AppStorage(Key.corrections) var corrections = true
@@ -463,8 +466,8 @@ private struct SettingsPane: View {
             }
             Section("Speech recognition") {
                 Picker("English engine", selection: $engine) {
-                    Text("Fast English (Moonshine Base)").tag(EngineKind.fastEnglish.rawValue)
-                    Text("Hindi + English model").tag(EngineKind.hindiEnglish.rawValue)
+                    Text("Whisper (best accuracy, uses your Dictionary)").tag(EngineKind.hindiEnglish.rawValue)
+                    Text("Fast English (Moonshine, needs its own model)").tag(EngineKind.fastEnglish.rawValue)
                 }.disabled(language != "en")
                 Picker("Hindi output script", selection: $script) {
                     Text("Latin (Hinglish: “kal meeting hai”)").tag("latin"); Text("Devanagari (“कल मीटिंग है”)").tag("devanagari")
@@ -477,18 +480,22 @@ private struct SettingsPane: View {
                 Toggle("Auto-capitalise", isOn: $capitalize)
                 Toggle("Add final punctuation", isOn: $finalPunct)
             }
-            Section("Models (copied into the app; nothing is downloaded)") {
+            Section("Models (copied into the app; VoiceType itself never goes online)") {
                 ForEach(ModelSlot.allCases, id: \.self) { slot in
                     HStack {
                         Image(systemName: app.models.isReady(slot) ? "checkmark.circle.fill" : "circle")
                             .foregroundColor(app.models.isReady(slot) ? .green : .secondary)
                         Text(slot.title)
                         Spacer()
-                        Text(app.models.isReady(slot) ? ByteCountFormatter.string(fromByteCount: app.models.size(slot), countStyle: .file) : "missing")
+                        Text(slot == .vad && app.models.isVADBuiltIn ? "built in" :
+                                (app.models.isReady(slot) ? ByteCountFormatter.string(fromByteCount: app.models.size(slot), countStyle: .file) : "missing"))
                             .foregroundColor(.secondary)
                     }
                 }
-                Button("Import models folder…") { app.importModels { model.importReport = $0; model.refresh += 1 } }
+                HStack {
+                    Button("Download speech model (\(KnownModels.recommended.sizeText))") { app.downloadModel() }
+                    Button("Import model…") { app.importModels { model.importReport = $0; model.refresh += 1 } }
+                }
                 if !model.importReport.isEmpty { Text(model.importReport).font(.caption).textSelection(.enabled) }
             }
             Section("Privacy") {

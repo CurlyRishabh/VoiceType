@@ -153,15 +153,15 @@ struct OnboardingView: View {
 
     private var models: some View {
         VStack(alignment: .leading, spacing: 14) {
-            step("Add the speech models",
-                 "Choose the folder that holds vad, moonshine and whisper (for example voiceapk/models). The files are copied into VoiceType; nothing is downloaded.",
+            step("Get the speech model",
+                 "One file (\(KnownModels.recommended.sizeText)). VoiceType never goes online, so your browser downloads it:\n1. Click Download and wait for it to finish.\n2. Click Import and choose \(KnownModels.recommended.fileName) in Downloads.\nVoiceType checks the file and copies it in; you can delete the download afterwards.",
                  done: isDone(.models)) {
-                Button("Import models folder…") { app.importModels { model.importReport = $0; model.refresh += 1 } }
+                Button("Download (\(KnownModels.recommended.sizeText))") { app.downloadModel() }
+                Button("Import…") { app.importModels { model.importReport = $0; model.refresh += 1 } }
             }
-            ForEach(ModelSlot.allCases, id: \.self) { slot in
-                Label(slot.title, systemImage: app.models.isReady(slot) ? "checkmark.circle.fill" : "circle")
-                    .foregroundColor(app.models.isReady(slot) ? .primary : .secondary)
-            }
+            Label(app.models.isReady(.whisper) ? "Speech model ready" : "Speech model not imported yet",
+                  systemImage: app.models.isReady(.whisper) ? "checkmark.circle.fill" : "circle")
+                .foregroundColor(app.models.isReady(.whisper) ? .primary : .secondary)
             if !model.importReport.isEmpty { Text(model.importReport).font(.caption).foregroundColor(.secondary) }
         }
     }

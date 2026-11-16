@@ -24,6 +24,8 @@ build/
 /mac/.build/
 /mac/build/
 /mac/vendor/
+# Real-audio benchmark data and results (mac/scripts/bench-asr.sh)
+/mac/bench-data/
 *.dmg
 
 # local configuration files

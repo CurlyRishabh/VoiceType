@@ -16,10 +16,13 @@ let package = Package(
         // sherpa-onnx C API (prebuilt dylibs in vendor/, fetched by scripts/fetch-sherpa.sh).
         .systemLibrary(name: "CSherpaOnnx", path: "Sources/CSherpaOnnx"),
 
+        // whisper.cpp with Metal (prebuilt xcframework in vendor/, fetched by scripts/fetch-whisper-cpp.sh).
+        .binaryTarget(name: "whisper", path: "vendor/whisper.xcframework"),
+
         // The menu-bar app.
         .executableTarget(
             name: "VoiceType",
-            dependencies: ["VoiceTypeCore", "CSherpaOnnx"],
+            dependencies: ["VoiceTypeCore", "CSherpaOnnx", "whisper"],
             path: "Sources/VoiceTypeApp",
             linkerSettings: [
                 .unsafeFlags(["-L", sherpaLib, "-Xlinker", "-rpath", "-Xlinker", "@executable_path/../Frameworks"]),

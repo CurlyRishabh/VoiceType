@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import Foundation
 import VoiceTypeCore
 
@@ -26,7 +27,7 @@ enum AppSettings {
 
     static func registerDefaults() {
         d.register(defaults: [
-            Key.language: "en", Key.englishEngine: EngineKind.fastEnglish.rawValue, Key.script: "latin",
+            Key.language: "en", Key.englishEngine: EngineKind.hindiEnglish.rawValue, Key.script: "latin",
             Key.silenceMs: 1500, Key.fillers: true, Key.corrections: true, Key.commands: true,
             Key.capitalize: true, Key.finalPunct: true, Key.polish: true, Key.polishStyle: "casual",
             Key.hotkey: 0, Key.history: true, Key.keepRecordings: false, Key.showHUD: true,
@@ -44,8 +45,18 @@ enum AppSettings {
         switch d.string(forKey: Key.language) {
         case "hi": return EngineSpec(kind: .hindiEnglish, language: "hi")
         case "auto": return EngineSpec(kind: .hindiEnglish, language: "")
-        default: return EngineSpec(kind: EngineKind(rawValue: d.string(forKey: Key.englishEngine) ?? "") ?? .fastEnglish, language: "en")
+        default: return EngineSpec(kind: EngineKind(rawValue: d.string(forKey: Key.englishEngine) ?? "") ?? .hindiEnglish, language: "en")
         }
+    }
+
+    /// The configured engine, but for English falls back to whichever model is actually imported
+    /// (Whisper is the default; someone with only Moonshine still gets a working setup).
+    static func engineSpec(_ models: ModelStore) -> EngineSpec {
+        var s = engineSpec
+        guard s.language == "en" else { return s }
+        if s.kind == .hindiEnglish, !models.isReady(.whisper), models.isReady(.moonshine) { s.kind = .fastEnglish }
+        if s.kind == .fastEnglish, !models.isReady(.moonshine), models.isReady(.whisper) { s.kind = .hindiEnglish }
+        return s
     }
 
     static var dictionary: PersonalDictionary {
@@ -73,8 +84,11 @@ enum AppSettings {
 }
 
 /// Models copied into Application Support (inside the sandbox container) via the Open panel only.
+/// The small Silero VAD also ships inside the app, so users only ever import the speech model.
 final class ModelStore {
     let root: URL
+    private let bundledVAD: URL? = Bundle.main.resourceURL
+        .flatMap { ModelLayout.vad($0.appendingPathComponent("models/vad", isDirectory: true)) }
 
     init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -88,11 +102,14 @@ final class ModelStore {
     }
 
     func dir(_ slot: ModelSlot) -> URL { root.appendingPathComponent(slot.rawValue, isDirectory: true) }
-    func isReady(_ slot: ModelSlot) -> Bool { ModelLayout.isComplete(root, slot) }
-    var vadFile: URL? { ModelLayout.vad(dir(.vad)) }
+    func isReady(_ slot: ModelSlot) -> Bool { ModelLayout.isComplete(root, slot) || (slot == .vad && bundledVAD != nil) }
+    var vadFile: URL? { ModelLayout.vad(dir(.vad)) ?? bundledVAD }
+    var isVADBuiltIn: Bool { ModelLayout.vad(dir(.vad)) == nil && bundledVAD != nil }
 
     func files(_ slot: ModelSlot) -> [URL] {
-        ((try? FileManager.default.contentsOfDirectory(at: dir(slot), includingPropertiesForKeys: [.fileSizeKey])) ?? []).sorted { $0.lastPathComponent < $1.lastPathComponent }
+        let imported = ((try? FileManager.default.contentsOfDirectory(at: dir(slot), includingPropertiesForKeys: [.fileSizeKey])) ?? []).sorted { $0.lastPathComponent < $1.lastPathComponent }
+        if slot == .vad, imported.isEmpty, let b = bundledVAD { return [b] }
+        return imported
     }
 
     func size(_ slot: ModelSlot) -> Int64 {
@@ -100,6 +117,45 @@ final class ModelStore {
     }
 
     func clear(_ slot: ModelSlot) { try? FileManager.default.removeItem(at: dir(slot)) }
+
+    /// Imports what the user picked in the Open panel: a single model file (normally the downloaded
+    /// `ggml-large-v3-turbo-q5_0.bin`) or a models folder. Returns a human-readable report.
+    func importItem(_ url: URL) -> String {
+        url.hasDirectoryPath ? importFolder(url) : importFile(url)
+    }
+
+    func importFile(_ file: URL) -> String {
+        let fm = FileManager.default
+        let name = file.lastPathComponent
+        let slot: ModelSlot
+        if ModelLayout.accepts(.whisper, name) && file.pathExtension.lowercased() == "bin" { slot = .whisper }
+        else if name.lowercased().contains("vad") && file.pathExtension.lowercased() == "onnx" { slot = .vad }
+        else { return "\(name) isn't a VoiceType model. Choose \(KnownModels.recommended.fileName) (or a models folder)." }
+        if let problem = verify(file) { return problem }
+        let dest = dir(slot)
+        try? fm.createDirectory(at: dest, withIntermediateDirectories: true)
+        if slot == .whisper { // the newest whisper.cpp model replaces any older one
+            for old in files(.whisper) where old.pathExtension.lowercased() == "bin" { try? fm.removeItem(at: old) }
+        }
+        let to = dest.appendingPathComponent(name)
+        try? fm.removeItem(at: to)
+        do { try fm.copyItem(at: file, to: to) } catch { return "\(slot.title): \(error.localizedDescription)" }
+        return "\(slot.title): \(isReady(slot) ? "Ready" : "incomplete")"
+    }
+
+    /// Size + SHA-256 check for model files VoiceType knows by name.
+    private func verify(_ file: URL) -> String? {
+        let bytes = Int64((try? file.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+        return KnownModels.problem(fileName: file.lastPathComponent, bytes: bytes) { Self.sha256(file) }
+    }
+
+    private static func sha256(_ file: URL) -> String? {
+        guard let h = try? FileHandle(forReadingFrom: file) else { return nil }
+        defer { try? h.close() }
+        var hasher = SHA256()
+        while let chunk = try? h.read(upToCount: 8 << 20), !chunk.isEmpty { hasher.update(data: chunk) }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
 
     /// Imports from a folder the user picked: either the whole `models` folder (with vad/, moonshine/,
     /// whisper/ inside) or a single model's folder. Returns a human-readable report.
@@ -112,7 +168,7 @@ final class ModelStore {
         }
         if sources.isEmpty {
             // A single model folder: guess the slot from its files.
-            if ModelLayout.whisper(folder) != nil { sources = [(.whisper, folder)] }
+            if ModelLayout.whisper(folder) != nil || ModelLayout.whisperCpp(folder) != nil { sources = [(.whisper, folder)] }
             else if ModelLayout.moonshine(folder) != nil { sources = [(.moonshine, folder)] }
             else if ModelLayout.vad(folder) != nil { sources = [(.vad, folder)] }
         }
@@ -123,6 +179,7 @@ final class ModelStore {
             let items = (try? fm.contentsOfDirectory(at: src, includingPropertiesForKeys: nil)) ?? []
             var copied = 0
             for item in items where !item.hasDirectoryPath && ModelLayout.accepts(slot, item.lastPathComponent) {
+                if let problem = verify(item) { report.append(problem); continue }
                 let to = dest.appendingPathComponent(item.lastPathComponent)
                 try? fm.removeItem(at: to)
                 do { try fm.copyItem(at: item, to: to); copied += 1 } catch { report.append("\(slot.title): \(error.localizedDescription)") }

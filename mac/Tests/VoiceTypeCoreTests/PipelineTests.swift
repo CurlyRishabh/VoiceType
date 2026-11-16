@@ -196,5 +196,49 @@ struct AudioLogicTests {
         let w = ModelLayout.whisper(dir)
         guard case .whisper(let enc, _)? = w?.kind else { Issue.record("no whisper"); return }
         #expect(enc.hasSuffix("small-encoder.int8.onnx"))
+        #expect(ModelLayout.whisperCpp(dir) == nil)
+    }
+    @Test func whisperCppLayout() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let dir = root.appendingPathComponent("whisper")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // A ggml model alone makes the whisper slot complete (no ONNX files needed on the Mac).
+        try Data("x".utf8).write(to: dir.appendingPathComponent("ggml-small.bin"))
+        #expect(ModelLayout.isComplete(root, .whisper))
+        try Data("x".utf8).write(to: dir.appendingPathComponent("ggml-large-v3-turbo-q5_0.bin"))
+        let m = try #require(ModelLayout.whisperCpp(dir))
+        #expect(m.lastPathComponent == "ggml-large-v3-turbo-q5_0.bin") // turbo preferred
+        #expect(ModelLayout.whisperCppName(m) == "large-v3-turbo-q5_0")
+        #expect(ModelLayout.accepts(.whisper, "ggml-large-v3-turbo-q5_0.bin"))
+        #expect(!ModelLayout.accepts(.moonshine, "ggml-small.bin"))
+    }
+    @Test func whisperCppSkipsTokenBudget() {
+        // whisper.cpp has no 6 tok/s cap: Hindi gets plain <= 25 s chunks, no silence padding.
+        let chunks = DecodePlan.chunks(samples: [Float](repeating: 0.1, count: 20 * s), segments: nil, whisper: true, language: "hi", tokenBudget: false)
+        #expect(chunks.count == 1 && chunks[0].count == 20 * s)
+    }
+    @Test func knownModelCheck() {
+        let ok = KnownModels.recommended
+        #expect(KnownModels.problem(fileName: ok.fileName, bytes: ok.bytes) { ok.sha256 } == nil)
+        // A half-finished browser download is refused without hashing 548 MB.
+        var hashed = false
+        #expect(KnownModels.problem(fileName: ok.fileName, bytes: ok.bytes / 2) { hashed = true; return nil }?.contains("incomplete") == true)
+        #expect(!hashed)
+        #expect(KnownModels.problem(fileName: ok.fileName, bytes: ok.bytes) { "0000" }?.contains("damaged") == true)
+        #expect(KnownModels.problem(fileName: "ggml-custom-finetune.bin", bytes: 5) { nil } == nil) // unknown files allowed
+    }
+    @Test func vocabularyPrompt() {
+        #expect(WhisperPrompt.build([]) == nil)
+        #expect(WhisperPrompt.build([" Cassie QC agent ", "ChargeBee", "cassie qc agent", ""]) == "Cassie QC agent, ChargeBee.")
+        let many = WhisperPrompt.build((1...200).map { "Term number \($0)" })!
+        #expect(many.count <= WhisperPrompt.maxCharacters)
+    }
+    @Test func vocabularyPromptEcho() {
+        let prompt = "Cassie QC agent, ChargeBee, Rishabh."
+        #expect(WhisperPrompt.isEcho("Cassie QC agent, ChargeBee, Rishabh.", prompt: prompt))
+        #expect(WhisperPrompt.isEcho("ChargeBee. Cassie QC agent", prompt: prompt))
+        #expect(!WhisperPrompt.isEcho("Cassie QC agent.", prompt: prompt))                    // one term: real dictation
+        #expect(!WhisperPrompt.isEcho("Ask Cassie QC agent about ChargeBee", prompt: prompt)) // real sentence
+        #expect(!WhisperPrompt.isEcho("", prompt: prompt))
     }
 }

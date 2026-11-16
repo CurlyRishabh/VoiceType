@@ -1,25 +1,31 @@
 # VoiceType for Mac: private, offline dictation
 
 A menu-bar app that types what you say into any app. It runs entirely on your Mac: speech
-recognition (sherpa-onnx with Moonshine / Whisper), the clean-up rules (the same rules and tests as
+recognition (Whisper large-v3-turbo via whisper.cpp on the GPU by default; Moonshine via sherpa-onnx
+optional), the clean-up rules (the same rules and tests as
 the Android app), and optional AI polish with Apple's **on-device** model. The app is
 **sandboxed with no network entitlement**, so macOS itself blocks it from connecting anywhere.
 
 ## Install
 
-1. Open `VoiceType.dmg` and drag **VoiceType** into **Applications**.
-2. Open it from Applications. It lives in the menu bar (🎙 icon), with no Dock icon.
-   This is a personal, ad-hoc-signed build. If macOS says it can't verify the developer
-   (only when the DMG was downloaded or copied from elsewhere): **System Settings → Privacy & Security →
-   Open Anyway**, or right-click the app → **Open**.
-3. The **Setup** tab opens on first launch:
-   * **Microphone**: click *Allow…*.
-   * **Accessibility (auto-paste)**: click *Allow…*, then switch **VoiceType** on in the list.
-     Without it, dictated text is copied and you press ⌘V yourself.
-   * **Input Monitoring** for the fn key, and macOS's "Press 🌐 key to" set to **Do Nothing**.
-   * **Models → Import models folder…**: choose the `models` folder that has `vad/`, `moonshine/`
-     and `whisper/` inside (for example `voiceapk/models`). The files are copied into the app's
-     private container, so the original folder can be deleted afterwards.
+Needs an Apple-silicon Mac (M1 or newer) on macOS 15+.
+
+1. **Install:** `brew install --cask curlyrishabh/tap/voicetype`, or open `VoiceType.dmg` and drag
+   **VoiceType** into **Applications**.
+2. **Open it** from Applications. It lives in the menu bar (🎙 icon), with no Dock icon.
+   This is an ad-hoc-signed build: the first time, macOS says it can't verify the developer. Go to
+   **System Settings → Privacy & Security → Open Anyway**.
+3. **The Setup window** walks you through the rest:
+   * **Microphone**: click *Allow*.
+   * **Accessibility (auto-paste)**: click *Allow*, then switch **VoiceType** on in the list.
+   * **Input Monitoring** for the fn key, and "Press 🌐 key to" set to **Do Nothing** (or pick
+     ⌥ Space, which needs neither).
+   * **Speech model**: click **Download** (your browser downloads one 548 MB file), then **Import…**
+     and choose `ggml-large-v3-turbo-q5_0.bin` in Downloads. VoiceType checks its size and SHA-256,
+     copies it into its private container, and you can delete the download.
+
+That's the only download: the voice-activity model ships inside the app, and Whisper is the default
+engine for English and Hindi.
 
 > Rebuilt the app? macOS ties permissions to the exact build for ad-hoc-signed apps. If dictation
 > stops pasting after an update, remove VoiceType from Privacy & Security → Accessibility and add it again.
@@ -65,10 +71,29 @@ The same files as the phone (`voiceapk/models`):
 | `moonshine/` | `preprocess.onnx`, `encode.int8.onnx`, `uncached_decode.int8.onnx`, `cached_decode.int8.onnx`, `tokens.txt` | Fast English (RTF ≈ 0.01 on Apple silicon) |
 | `whisper/` | `small-encoder.int8.onnx`, `small-decoder.int8.onnx`, `small-tokens.txt` | Hindi + English |
 
-**Better Hindi on the Mac:** Whisper *large-v3-turbo* is much more accurate for Hindi and still
-fast here (RTF ≈ 0.4). Put **only** these files in a `whisper/` folder instead of the small ones and import it:
-`turbo-encoder.int8.onnx`, `turbo-decoder.int8.onnx`, `turbo-tokens.txt` from
-<https://huggingface.co/csukuangfj/sherpa-onnx-whisper-turbo/tree/main> (~1 GB).
+**Default: whisper.cpp on the GPU.** The Setup's **Download** button fetches
+**`ggml-large-v3-turbo-q5_0.bin`** (548 MB) from <https://huggingface.co/ggerganov/whisper.cpp>
+(SHA-256 `394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2`, checked on import).
+Any other whisper.cpp `ggml-*.bin` can be imported the same way; the newest import replaces the old
+one. Older setups keep working: the sherpa-onnx Whisper ONNX files and Moonshine can still be
+imported as a folder (with `vad/`, `moonshine/`, `whisper/` inside), and if only Moonshine is
+present, English falls back to it.
+
+Measured on an M5 Pro (synthetic speech, after the first load):
+
+| Engine | Hindi sentence (5.7 s) | English sentence (7.3 s) |
+|---|---|---|
+| sherpa-onnx Whisper small (CPU) | 2.1 s, many wrong words | 0.6 s |
+| **whisper.cpp large-v3-turbo q5_0 (GPU)** | **0.3 s, nearly exact** | **0.2 s** |
+| Moonshine Base (CPU, Fast English) | n/a | 0.08 s |
+
+The first dictation after launch takes ~3 s longer while Metal compiles its kernels.
+
+**Your Dictionary helps recognition too.** With whisper.cpp, the spellings on the right-hand side of
+your Dictionary (e.g. `Cassie QC agent`, `ChargeBee`) are given to Whisper as a vocabulary prompt,
+so it hears them correctly instead of "CASI QC agent" or "charge B". This applies to the Hindi +
+English engine (choose it as the English engine in Settings to use it for English too). Moonshine
+and the sherpa-onnx Whisper can't take a prompt; the Dictionary still fixes their output afterwards.
 
 **AI polish** uses Apple Intelligence's on-device model (macOS 26+, Apple silicon, Apple
 Intelligence turned on in System Settings). There's nothing to download. The app uses only
@@ -93,21 +118,57 @@ Needs the Xcode Command Line Tools (`xcode-select --install`). Full Xcode isn't 
 
 ```bash
 cd mac
-scripts/build-dmg.sh      # fetches sherpa-onnx (checksum-verified), runs unit tests, builds,
+scripts/build-dmg.sh      # fetches sherpa-onnx + whisper.cpp (checksum-verified), runs unit tests, builds,
                           # signs ad-hoc with the sandbox entitlements, verifies them, makes the DMG
 open build/VoiceType.dmg
 ```
 
 Self-test on a WAV file (unsandboxed dev binary):
 ```bash
-DYLD_LIBRARY_PATH=vendor/sherpa-onnx/lib .build/release/VoiceType --selftest ../models some.wav hi whisper
+DYLD_LIBRARY_PATH=vendor/sherpa-onnx/lib "$(swift build -c release --arch arm64 --show-bin-path)/VoiceType" \
+  --selftest ../models some.wav hi whisper
+# test the vocabulary prompt (whisper.cpp only):
+VOICETYPE_PROMPT="Cassie QC agent, ChargeBee" DYLD_LIBRARY_PATH=vendor/sherpa-onnx/lib ... --selftest ../models some.wav en whisper
 ```
+The models folder must contain real folders (not symlinks).
+
+## Benchmark on real audio
+
+`scripts/bench-asr.sh` measures accuracy and speed of each engine on real recordings, using the same
+voice detection, chunking and filtering as live dictation:
+
+```bash
+cd mac
+scripts/bench-asr.sh                     # 100 clips each of LibriSpeech clean/other + FLEURS Hindi
+scripts/bench-asr.sh --n 300 --sets hindi
+scripts/bench-asr.sh --cv ~/Downloads/cv-corpus-21.0/hi --cv-lang hi --sets cv   # Common Voice
+VOICETYPE_PROMPT="Cassie QC agent, ChargeBee" scripts/bench-asr.sh --sets clean  # with a vocabulary prompt
+```
+
+| Dataset | What it tests | Download |
+|---|---|---|
+| LibriSpeech test-clean | English, clear audiobook speech | automatic (347 MB, MD5-checked) |
+| LibriSpeech test-other | English, harder speakers and recordings | automatic (329 MB, MD5-checked) |
+| FLEURS hi_in test | Real Hindi speech | automatic (249 MB, SHA-256-checked, CC-BY-4.0) |
+| Common Voice | Accents, everyday speech | manual: Mozilla now requires a free account at <https://datacollective.mozillafoundation.org>; extract a language and pass its folder with `--cv` |
+
+It benchmarks every engine whose model it finds in `--models` (default `../models`):
+whisper.cpp (`whisper-cpp/*.bin` or `whisper/*.bin`), Moonshine, and sherpa-onnx Whisper. The report
+is `bench-data/results/summary.md`, with one TSV per dataset and engine listing every clip's reference
+and hypothesis. **WER** = word error rate, **CER** = character error rate (fairer for Hindi), lower
+is better. **RTF** = decode time / audio length. The text normaliser is deliberately simple
+(lower-case, no punctuation, digits spelled out), so absolute WERs run a little above published
+figures; compare engines with each other. Downloads and results live in `bench-data/` (git-ignored).
 
 ## Notes
 
 * **Hindi fix (also applied to the Android app):** sherpa-onnx's Whisper decoder allows only 6
   output tokens per second of audio, which cut Hindi sentences off halfway. Hindi/auto chunks are
-  now kept ≤ 8 s and padded with silence so the full sentence fits.
+  now kept ≤ 8 s and padded with silence so the full sentence fits. whisper.cpp has no such cap, so
+  with a `ggml-*.bin` model the chunks are plain ≤ 25 s and unpadded.
+* **whisper.cpp** is the prebuilt `whisper.xcframework` from the official release (build b5454 =
+  v1.9.5), pinned by SHA-256 in `scripts/fetch-whisper-cpp.sh`. Only its Apple-silicon slice is
+  bundled. It runs inside the same sandbox with no network entitlement.
 * The hot key uses Carbon `RegisterEventHotKey` (no Input Monitoring permission needed). ⌥ Space
   normally types a non-breaking space; pick another shortcut if you need that.
 * Clipboard: the pasted text is marked *transient/concealed* so clipboard managers ignore it, and your

@@ -31,10 +31,36 @@ struct EngineError: LocalizedError {
     init(_ m: String) { errorDescription = m }
 }
 
+/// A loaded speech model. Not thread-safe: SpeechHost serialises use.
+protocol SpeechRecognizing: AnyObject {
+    var spec: EngineSpec { get }
+    /// Short engine name for logs and the Debug tab.
+    var name: String { get }
+    /// `prompt`: vocabulary hint (only whisper.cpp uses it).
+    func transcribe(_ samples: [Float], prompt: String?) -> String
+}
+
+enum Recognizers {
+    /// Hindi + English uses whisper.cpp (Metal GPU) when a `ggml-*.bin` model is imported, otherwise
+    /// sherpa-onnx Whisper. Fast English is always sherpa-onnx Moonshine.
+    static func make(_ spec: EngineSpec, modelsRoot: URL) throws -> SpeechRecognizing {
+        if let model = whisperCppModel(spec, modelsRoot: modelsRoot) {
+            return try WhisperCppRecognizer(spec: spec, model: model)
+        }
+        return try SherpaRecognizer(spec: spec, modelsRoot: modelsRoot)
+    }
+
+    static func whisperCppModel(_ spec: EngineSpec, modelsRoot: URL) -> URL? {
+        guard spec.kind == .hindiEnglish else { return nil }
+        return ModelLayout.whisperCpp(modelsRoot.appendingPathComponent(ModelSlot.whisper.rawValue))
+    }
+}
+
 /// sherpa-onnx offline recogniser (Moonshine or Whisper). Not thread-safe: SpeechHost serialises use.
-final class SherpaRecognizer {
+final class SherpaRecognizer: SpeechRecognizing {
     let spec: EngineSpec
     private let recognizer: OpaquePointer
+    var name: String { spec.kind == .fastEnglish ? "moonshine" : "whisper-onnx" }
 
     init(spec: EngineSpec, modelsRoot: URL) throws {
         self.spec = spec
@@ -81,6 +107,8 @@ final class SherpaRecognizer {
         }
         recognizer = r
     }
+
+    func transcribe(_ samples: [Float], prompt: String?) -> String { transcribe(samples) }
 
     func transcribe(_ samples: [Float]) -> String {
         guard !samples.isEmpty, let stream = SherpaOnnxCreateOfflineStream(recognizer) else { return "" }

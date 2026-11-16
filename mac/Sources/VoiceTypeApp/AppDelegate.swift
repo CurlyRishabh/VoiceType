@@ -302,18 +302,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         showMainWindow(.home)
     }
 
+    /// Opens the speech model's download in the user's browser. VoiceType itself has no network
+    /// access (App Sandbox, no network entitlement); the browser does the download.
+    func downloadModel() {
+        NSWorkspace.shared.open(KnownModels.recommended.url)
+    }
+
     func importModels(_ completion: @escaping (String) -> Void) {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
-        panel.canChooseFiles = false
+        panel.canChooseFiles = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Import"
-        panel.message = "Choose the models folder (vad, moonshine, whisper inside) or one model’s folder"
+        panel.message = "Choose \(KnownModels.recommended.fileName) (in Downloads), or a models folder"
+        if let home = getpwuid(getuid())?.pointee.pw_dir { // the real Downloads, not the sandbox container's
+            panel.directoryURL = URL(fileURLWithPath: String(cString: home)).appendingPathComponent("Downloads", isDirectory: true)
+        }
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        completion("Importing…")
+        completion("Checking and copying the model…")
         speech.release()
         DispatchQueue.global(qos: .userInitiated).async {
-            let report = self.models.importFolder(url)
+            let report = self.models.importItem(url)
             DispatchQueue.main.async {
                 completion(report)
                 self.dictation.warmUp()

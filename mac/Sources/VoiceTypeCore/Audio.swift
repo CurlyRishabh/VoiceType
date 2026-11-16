@@ -64,8 +64,10 @@ public enum WhisperBudget {
 
 /// Plans decode chunks for an utterance; shared by live dictation and the self-test.
 public enum DecodePlan {
-    public static func chunks(samples: [Float], segments: [Segment]?, whisper: Bool, language: String) -> [[Float]] {
-        let padding = WhisperBudget.needsPadding(whisper: whisper, language: language)
+    /// `tokenBudget`: apply the sherpa-onnx Whisper workaround above. whisper.cpp has no such cap
+    /// (it seeks through each 30 s window by timestamps), so it gets plain <= 25 s chunks.
+    public static func chunks(samples: [Float], segments: [Segment]?, whisper: Bool, language: String, tokenBudget: Bool = true) -> [[Float]] {
+        let padding = tokenBudget && WhisperBudget.needsPadding(whisper: whisper, language: language)
         let maxChunk = padding ? WhisperBudget.maxChunkSamples : AudioChunker.maxChunk
         return AudioChunker.plan(total: samples.count, segments: segments, maxChunk: maxChunk).map { r in
             let c = Array(samples[r])
@@ -106,9 +108,46 @@ public enum ModelSlot: String, CaseIterable, Sendable {
     public var title: String {
         switch self {
         case .vad: return "Silero VAD (auto-stop)"
-        case .moonshine: return "Fast English (Moonshine Base int8)"
-        case .whisper: return "Hindi + English (Whisper small int8)"
+        case .moonshine: return "Fast English (Moonshine, optional)"
+        case .whisper: return "Speech model (Whisper: English + Hindi)"
         }
+    }
+}
+
+/// Model files VoiceType knows by name: the one-click download, and checksums so an incomplete or
+/// tampered download is refused at import.
+public enum KnownModels {
+    public struct Download: Sendable {
+        public let fileName: String
+        public let bytes: Int64
+        public let sha256: String
+        public let url: URL
+        public var sizeText: String { "\(bytes / 1_000_000) MB" }
+    }
+
+    /// The default speech model: Whisper large-v3-turbo for whisper.cpp (English + Hindi, GPU).
+    public static let recommended = Download(
+        fileName: "ggml-large-v3-turbo-q5_0.bin", bytes: 574_041_195,
+        sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+        url: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin")!)
+
+    /// Official whisper.cpp files (huggingface.co/ggerganov/whisper.cpp) by name.
+    public static let whisperCpp: [String: (bytes: Int64, sha256: String)] = [
+        "ggml-large-v3-turbo-q5_0.bin": (574_041_195, "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"),
+        "ggml-large-v3-turbo-q8_0.bin": (874_188_075, "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1"),
+        "ggml-large-v3-turbo.bin": (1_624_555_275, "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69"),
+        "ggml-small.bin": (487_601_967, "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"),
+        "ggml-small-q5_1.bin": (190_085_487, "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb"),
+    ]
+
+    /// nil when the file is fine (or unknown); otherwise why it's rejected. `hash` is called only if the size matches.
+    public static func problem(fileName: String, bytes: Int64, hash: () -> String?) -> String? {
+        guard let known = whisperCpp[fileName] else { return nil }
+        if bytes != known.bytes {
+            return "\(fileName) is incomplete (\(bytes / 1_000_000) of \(known.bytes / 1_000_000) MB). Let the download finish, or download it again."
+        }
+        if hash() != known.sha256 { return "\(fileName) is damaged (checksum mismatch). Download it again." }
+        return nil
     }
 }
 
@@ -150,6 +189,19 @@ public enum ModelLayout {
         return SpeechFiles(kind: .whisper(encoder: e.path, decoder: d.path), tokens: t.path)
     }
 
+    /// A whisper.cpp model (`ggml-*.bin`, Mac only) in the whisper folder. When present it is used
+    /// instead of the sherpa-onnx Whisper files. Several: prefer a turbo model, then by name.
+    public static func whisperCpp(_ dir: URL) -> URL? {
+        let c = files(dir).filter { $0.pathExtension.lowercased() == "bin" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        return c.first { $0.lastPathComponent.contains("turbo") } ?? c.first
+    }
+
+    /// "ggml-large-v3-turbo-q5_0.bin" -> "large-v3-turbo-q5_0".
+    public static func whisperCppName(_ url: URL) -> String {
+        let n = url.deletingPathExtension().lastPathComponent
+        return n.hasPrefix("ggml-") ? String(n.dropFirst(5)) : n
+    }
+
     public static func vad(_ dir: URL) -> URL? { files(dir).first { $0.pathExtension == "onnx" } }
 
     public static func isComplete(_ root: URL, _ slot: ModelSlot) -> Bool {
@@ -157,7 +209,7 @@ public enum ModelLayout {
         switch slot {
         case .vad: return vad(d) != nil
         case .moonshine: return moonshine(d) != nil
-        case .whisper: return whisper(d) != nil
+        case .whisper: return whisper(d) != nil || whisperCpp(d) != nil
         }
     }
 
@@ -166,7 +218,51 @@ public enum ModelLayout {
         switch slot {
         case .vad: return n.hasSuffix(".onnx")
         case .moonshine: return n.hasSuffix(".onnx") || n.hasSuffix(".ort") || n == "tokens.txt"
-        case .whisper: return n.hasSuffix(".onnx") || n.hasSuffix("tokens.txt")
+        case .whisper: return n.hasSuffix(".onnx") || n.hasSuffix("tokens.txt") || n.hasSuffix(".bin")
         }
+    }
+}
+
+/// The user's vocabulary as a Whisper initial prompt, so names like "Cassie QC agent" are
+/// recognised directly instead of being fixed up afterwards.
+public enum WhisperPrompt {
+    /// Whisper reads at most ~224 prompt tokens; ~600 characters of names stays well inside that.
+    public static let maxCharacters = 600
+
+    /// Comma-separated glossary of the spellings the user wants ("Cassie QC agent, ChargeBee.").
+    public static func build(_ terms: [String]) -> String? {
+        var seen = Set<String>()
+        var out: [String] = []
+        var length = 0
+        for t in terms {
+            let s = t.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !s.isEmpty, seen.insert(s.lowercased()).inserted else { continue }
+            if length + s.count + 2 > maxCharacters { break }
+            out.append(s)
+            length += s.count + 2
+        }
+        return out.isEmpty ? nil : out.joined(separator: ", ") + "."
+    }
+
+    /// Whisper can "read back" its prompt when there is little real speech. Treat output made only of
+    /// glossary terms (at least two of them) as that echo. A single term on its own is kept: saying
+    /// just "Cassie QC agent" is a real dictation.
+    public static func isEcho(_ text: String, prompt: String) -> Bool {
+        let terms = prompt.split(separator: ",").map { normalize(String($0)) }.filter { !$0.isEmpty }
+            .sorted { $0.count > $1.count }
+        var rest = " " + normalize(text) + " "
+        var hits = 0
+        for term in terms {
+            while let r = rest.range(of: " \(term) ") {
+                rest.replaceSubrange(r, with: " ")
+                hits += 1
+            }
+        }
+        return hits >= 2 && rest.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    static func normalize(_ s: String) -> String {
+        let kept = s.lowercased().unicodeScalars.map { CharacterSet.alphanumerics.contains($0) ? Character($0) : " " }
+        return String(kept).split(separator: " ").joined(separator: " ")
     }
 }

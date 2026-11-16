@@ -11,6 +11,10 @@ PLUGINS="/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing"
 
 echo "==> sherpa-onnx libraries"
 scripts/fetch-sherpa.sh
+echo "==> whisper.cpp framework"
+scripts/fetch-whisper-cpp.sh
+echo "==> Silero VAD (bundled)"
+scripts/fetch-vad.sh
 
 echo "==> unit tests"
 TEST_FLAGS=()
@@ -26,7 +30,14 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
 cp "$(swift build -c release --arch arm64 --show-bin-path)/VoiceType" "$APP/Contents/MacOS/VoiceType"
 cp vendor/sherpa-onnx/lib/libsherpa-onnx-c-api.dylib vendor/sherpa-onnx/lib/libonnxruntime.dylib "$APP/Contents/Frameworks/"
+# whisper.cpp: Apple-silicon slice only, without headers (not needed at run time).
+WFW="$APP/Contents/Frameworks/whisper.framework"
+ditto --arch arm64 vendor/whisper.xcframework/macos-arm64_x86_64/whisper.framework "$WFW"
+rm -rf "$WFW/Headers" "$WFW/Modules" "$WFW/Versions/A/Headers" "$WFW/Versions/A/Modules"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+# Silero VAD ships in the app (0.6 MB), so users only import the speech model.
+mkdir -p "$APP/Contents/Resources/models/vad"
+cp vendor/silero_vad.onnx "$APP/Contents/Resources/models/vad/"
 cp Resources/THIRD_PARTY_NOTICES.txt "$APP/Contents/Resources/THIRD_PARTY_NOTICES.txt"
 
 # App icon
@@ -41,6 +52,7 @@ iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
 echo "==> signing (ad-hoc) with sandbox entitlements"
 codesign --force --sign - "$APP/Contents/Frameworks/"*.dylib
+codesign --force --sign - "$APP/Contents/Frameworks/whisper.framework"
 codesign --force --sign - --entitlements Resources/VoiceType.entitlements "$APP"
 codesign --verify --deep --strict "$APP"
 

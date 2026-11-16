@@ -16,7 +16,7 @@ final class SpeechHost {
     private let queue = DispatchQueue(label: "speech-engine", qos: .userInitiated)
     private let modelsRoot: URL
     private let idleRelease: TimeInterval = 5 * 60
-    private var engine: SherpaRecognizer?
+    private var engine: SpeechRecognizing?
     private var idleItem: DispatchWorkItem?
     private var memoryPressure: DispatchSourceMemoryPressure?
 
@@ -43,7 +43,9 @@ final class SpeechHost {
     }
 
     /// `audioMillis` is the real recording length (chunks may be silence-padded for Whisper).
-    func transcribe(_ spec: EngineSpec, chunks: [[Float]], audioMillis: Int, completion: @escaping (Result<Transcript, Error>) -> Void) {
+    /// `prompt`: vocabulary hint for whisper.cpp (ignored by the sherpa-onnx engines).
+    func transcribe(_ spec: EngineSpec, chunks: [[Float]], audioMillis: Int, prompt: String? = nil,
+                    completion: @escaping (Result<Transcript, Error>) -> Void) {
         queue.async {
             if chunks.isEmpty { // barrier: runs after every job queued before it
                 completion(.success(Transcript(text: "", audioMillis: 0, decodeMillis: 0, loadMillis: 0, spec: spec)))
@@ -52,14 +54,15 @@ final class SpeechHost {
             do {
                 let load = try self.ensureLoaded(spec)
                 let start = DispatchTime.now()
-                let text = chunks.map { self.engine!.transcribe($0) }.joined(separator: " ")
+                let engine = self.engine!
+                let text = chunks.map { engine.transcribe($0, prompt: prompt) }.joined(separator: " ")
                     .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
                     .trimmingCharacters(in: .whitespaces)
                 let decode = Int((DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000)
                 let audio = audioMillis
                 let t = Transcript(text: text, audioMillis: audio, decodeMillis: decode, loadMillis: load, spec: spec)
-                NSLog("VoiceType: decoded %dms audio in %dms (RTF %.3f), load %dms, %@", audio, decode, t.rtf, load, spec.kind.rawValue)
-                PerfLog.shared.add(.init(date: Date(), engine: spec.kind.rawValue + (spec.language.isEmpty ? "/auto" : "/" + spec.language),
+                NSLog("VoiceType: decoded %dms audio in %dms (RTF %.3f), load %dms, %@", audio, decode, t.rtf, load, engine.name)
+                PerfLog.shared.add(.init(date: Date(), engine: engine.name + (spec.language.isEmpty ? "/auto" : "/" + spec.language),
                                          audioMillis: audio, decodeMillis: decode, loadMillis: load))
                 self.scheduleIdleRelease()
                 completion(.success(t))
@@ -76,10 +79,11 @@ final class SpeechHost {
         if engine != nil, loadedSpec == spec { scheduleIdleRelease(); return 0 }
         releaseNow()
         let start = DispatchTime.now()
-        engine = try SherpaRecognizer(spec: spec, modelsRoot: modelsRoot)
+        let loaded = try Recognizers.make(spec, modelsRoot: modelsRoot)
+        engine = loaded
         loadedSpec = spec
         lastLoadMillis = Int((DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000)
-        NSLog("VoiceType: loaded %@ in %dms", spec.kind.rawValue, lastLoadMillis)
+        NSLog("VoiceType: loaded %@ in %dms", loaded.name, lastLoadMillis)
         scheduleIdleRelease()
         return lastLoadMillis
     }
