@@ -8,5 +8,12 @@
     <key>com.apple.security.device.audio-input</key><true/>
     <!-- Read-only access to the models folder you pick in the Open panel. -->
     <key>com.apple.security.files.user-selected.read-only</key><true/>
+    <!-- The one shared models folder, ~/Library/Application Support/VoiceType/Models (Homebrew's
+         voicetype-model cask installs there; Import copies there). Only this folder: nothing else
+         in your home folder becomes readable, and there is still no network access. -->
+    <key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+    <array>
+        <string>/Library/Application Support/VoiceType/</string>
+    </array>
 </dict>
 </plist>

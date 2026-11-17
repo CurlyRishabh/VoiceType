@@ -85,17 +85,40 @@ enum AppSettings {
     }
 }
 
-/// Models copied into Application Support (inside the sandbox container) via the Open panel only.
-/// The small Silero VAD also ships inside the app, so users only ever import the speech model.
+/// Speech models, in ONE folder shared with Homebrew: `~/Library/Application Support/VoiceType/Models`
+/// (see `SharedModels`). A model the `voicetype-model` cask installed is simply there; Import copies
+/// into the same folder. App updates never touch it. The small Silero VAD ships inside the app.
 final class ModelStore {
     let root: URL
     private let bundledVAD: URL? = Bundle.main.resourceURL
         .flatMap { ModelLayout.vad($0.appendingPathComponent("models/vad", isDirectory: true)) }
 
+    /// The real home folder: inside the sandbox, FileManager's home is the app's container.
+    static var realHome: URL {
+        if let dir = getpwuid(getuid())?.pointee.pw_dir { return URL(fileURLWithPath: String(cString: dir), isDirectory: true) }
+        return FileManager.default.homeDirectoryForCurrentUser
+    }
+
+    /// Where versions up to 1.0 kept models: inside the sandbox container.
+    private static var legacyRoot: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("VoiceType/models", isDirectory: true)
+    }
+
     init() {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        root = base.appendingPathComponent("VoiceType/models", isDirectory: true)
-        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let fm = FileManager.default
+        let shared = SharedModels.folder(home: Self.realHome)
+        let legacy = Self.legacyRoot
+        try? fm.createDirectory(at: shared, withIntermediateDirectories: true)
+        if fm.isWritableFile(atPath: shared.path) {
+            if !SharedModels.isSameFolder(shared, legacy) { Self.moveModels(from: legacy, to: shared) }
+            root = shared
+        } else {
+            // The shared folder isn't reachable (a build without its sandbox exception): old behaviour.
+            NSLog("VoiceType: %@ not writable, keeping models in the app container", shared.path)
+            try? fm.createDirectory(at: legacy, withIntermediateDirectories: true)
+            root = legacy
+        }
         // Keep multi-hundred-MB models out of Time Machine / backups.
         var r = root
         var values = URLResourceValues()
@@ -103,8 +126,39 @@ final class ModelStore {
         try? r.setResourceValues(values)
     }
 
+    /// One-time move of models imported into the container (1.0) to the shared folder. Same disk, so
+    /// it's a rename, not a copy. Files already in the shared folder win; leftovers are removed.
+    private static func moveModels(from old: URL, to new: URL) {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: old.path) else { return }
+        for slot in ModelSlot.allCases {
+            let from = old.appendingPathComponent(slot.rawValue, isDirectory: true)
+            let to = new.appendingPathComponent(slot.rawValue, isDirectory: true)
+            let files = (try? fm.contentsOfDirectory(at: from, includingPropertiesForKeys: nil)) ?? []
+            guard !files.isEmpty else { continue }
+            try? fm.createDirectory(at: to, withIntermediateDirectories: true)
+            for file in files where !file.hasDirectoryPath {
+                let dest = to.appendingPathComponent(file.lastPathComponent)
+                if fm.fileExists(atPath: dest.path) { try? fm.removeItem(at: file); continue }
+                do { try fm.moveItem(at: file, to: dest) } catch {
+                    NSLog("VoiceType: could not move %@: %@", file.lastPathComponent, error.localizedDescription)
+                }
+            }
+        }
+        // Drop the old folder once it's empty (anything that failed to move stays put).
+        let leftovers = (fm.enumerator(at: old, includingPropertiesForKeys: nil)?.allObjects as? [URL] ?? []).filter { !$0.hasDirectoryPath }
+        if leftovers.isEmpty { try? fm.removeItem(at: old) }
+    }
+
     func dir(_ slot: ModelSlot) -> URL { root.appendingPathComponent(slot.rawValue, isDirectory: true) }
-    func isReady(_ slot: ModelSlot) -> Bool { ModelLayout.isComplete(root, slot) || (slot == .vad && bundledVAD != nil) }
+    func isReady(_ slot: ModelSlot) -> Bool {
+        if slot == .whisper, let model = ModelLayout.whisperCpp(dir(.whisper)) {
+            // A known model of the wrong size is a cut-off download or copy: not usable.
+            let bytes = Int64((try? model.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0)
+            if !KnownModels.hasExpectedSize(fileName: model.lastPathComponent, bytes: bytes) { return false }
+        }
+        return ModelLayout.isComplete(root, slot) || (slot == .vad && bundledVAD != nil)
+    }
     var vadFile: URL? { ModelLayout.vad(dir(.vad)) ?? bundledVAD }
     var isVADBuiltIn: Bool { ModelLayout.vad(dir(.vad)) == nil && bundledVAD != nil }
 

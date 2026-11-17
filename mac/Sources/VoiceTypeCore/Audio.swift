@@ -126,11 +126,12 @@ public enum KnownModels {
     }
 
     /// The default speech model: Whisper large-v3-turbo for whisper.cpp (English + Hindi, GPU).
-    /// Served from this project's GitHub release; the size and SHA-256 are checked at import.
+    /// Served from this project's `models-v1` GitHub release, which app releases never replace (the
+    /// Homebrew `voicetype-model` cask uses the same file). Size and SHA-256 are checked at import.
     public static let recommended = Download(
         fileName: "ggml-large-v3-turbo-q5_0.bin", bytes: 574_041_195,
         sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
-        url: URL(string: "https://github.com/CurlyRishabh/VoiceType/releases/latest/download/ggml-large-v3-turbo-q5_0.bin")!)
+        url: URL(string: "https://github.com/CurlyRishabh/VoiceType/releases/download/models-v1/ggml-large-v3-turbo-q5_0.bin")!)
 
     /// The official whisper.cpp model files, by name.
     public static let whisperCpp: [String: (bytes: Int64, sha256: String)] = [
@@ -140,6 +141,11 @@ public enum KnownModels {
         "ggml-small.bin": (487_601_967, "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b"),
         "ggml-small-q5_1.bin": (190_085_487, "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb"),
     ]
+
+    /// False for a known model file of the wrong size (a cut-off download); unknown files pass.
+    public static func hasExpectedSize(fileName: String, bytes: Int64) -> Bool {
+        whisperCpp[fileName].map { $0.bytes == bytes } ?? true
+    }
 
     /// nil when the file is fine (or unknown); otherwise why it's rejected. `hash` is called only if the size matches.
     public static func problem(fileName: String, bytes: Int64, hash: () -> String?) -> String? {
@@ -265,5 +271,23 @@ public enum WhisperPrompt {
     static func normalize(_ s: String) -> String {
         let kept = s.lowercased().unicodeScalars.map { CharacterSet.alphanumerics.contains($0) ? Character($0) : " " }
         return String(kept).split(separator: " ").joined(separator: " ")
+    }
+}
+
+/// The one place speech models live: `~/Library/Application Support/VoiceType/Models`, outside the
+/// app's sandbox container. Homebrew's `voicetype-model` cask installs there, Import copies there,
+/// and replacing or updating the app never touches it. (Readable through a sandbox exception for
+/// that folder only; the app still has no network access.)
+public enum SharedModels {
+    public static let relativePath = "Library/Application Support/VoiceType/Models"
+
+    public static func folder(home: URL) -> URL {
+        home.appendingPathComponent(relativePath, isDirectory: true)
+    }
+
+    /// Same folder? (APFS is usually case-insensitive: ".../models" and ".../Models" are one place.)
+    public static func isSameFolder(_ a: URL, _ b: URL) -> Bool {
+        a.standardizedFileURL.path.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            == b.standardizedFileURL.path.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 }

@@ -254,3 +254,25 @@ struct LanguageSelectionTests {
     @Test func unknownCodesAreIgnored() { #expect(LanguageSelection.setting(for: ["fr", "hi"]) == "hi") }
     @Test func unsetMeansEnglish() { #expect(LanguageSelection.languages(for: nil) == ["en"]) }
 }
+
+struct SharedModelsTests {
+    @Test func folderIsInApplicationSupport() {
+        let f = SharedModels.folder(home: URL(fileURLWithPath: "/Users/someone", isDirectory: true))
+        #expect(f.path == "/Users/someone/Library/Application Support/VoiceType/Models")
+    }
+    @Test func sameFolderIgnoresCaseAndTrailingSlash() {
+        #expect(SharedModels.isSameFolder(URL(fileURLWithPath: "/Users/a/Library/Application Support/VoiceType/models"),
+                                          URL(fileURLWithPath: "/Users/a/Library/Application Support/VoiceType/Models/")))
+        #expect(!SharedModels.isSameFolder(URL(fileURLWithPath: "/Users/a/Library/Containers/x/Data/Library/Application Support/VoiceType/models"),
+                                           URL(fileURLWithPath: "/Users/a/Library/Application Support/VoiceType/Models")))
+    }
+    @Test func cutOffModelIsRejected() {
+        #expect(KnownModels.hasExpectedSize(fileName: "ggml-large-v3-turbo-q5_0.bin", bytes: 574_041_195))
+        #expect(!KnownModels.hasExpectedSize(fileName: "ggml-large-v3-turbo-q5_0.bin", bytes: 300_000_000))
+        #expect(KnownModels.hasExpectedSize(fileName: "ggml-my-own-model.bin", bytes: 12))   // unknown: allowed
+    }
+    @Test func downloadComesFromTheModelsRelease() {
+        #expect(KnownModels.recommended.url.absoluteString.contains("/releases/download/models-v1/"))
+        #expect(KnownModels.recommended.url.lastPathComponent == KnownModels.recommended.fileName)
+    }
+}

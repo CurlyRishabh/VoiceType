@@ -10,8 +10,8 @@ the Android app), and optional AI polish with Apple's **on-device** model. The a
 
 Needs an Apple-silicon Mac (M1 or newer) on macOS 15+.
 
-1. **Install:** `brew install --cask curlyrishabh/tap/voicetype`, or open `VoiceType.dmg` and drag
-   **VoiceType** into **Applications**.
+1. **Install:** `brew install --cask curlyrishabh/tap/voicetype` (installs the speech model as well),
+   or open `VoiceType.dmg` and drag **VoiceType** into **Applications**.
 2. **Open it** from Applications. It lives in the menu bar (🎙 icon), with no Dock icon.
    This is an ad-hoc-signed build: the first time, macOS says it can't verify the developer. Go to
    **System Settings → Privacy & Security → Open Anyway**.
@@ -24,12 +24,15 @@ Needs an Apple-silicon Mac (M1 or newer) on macOS 15+.
      on**, there's no need to add it with +. Also set "Press 🌐 key to" to **Do Nothing** (or pick
      ⌥ Space, which needs no Input Monitoring). If macOS asks to *Quit & Reopen* VoiceType, do;
      setup carries on where it was.
-   * **Speech model**: click **Download** (your browser downloads one 548 MB file), then **Import…**
-     and choose `ggml-large-v3-turbo-q5_0.bin` in Downloads. VoiceType checks its size and SHA-256,
-     copies it into its private container, and you can delete the download.
+   * **Speech model**: already done if you installed with Homebrew. Otherwise click **Download**
+     (your browser downloads one 548 MB file), then **Import…** and choose
+     `ggml-large-v3-turbo-q5_0.bin` in Downloads. VoiceType checks its size and SHA-256, copies it
+     into its models folder, and you can delete the download.
 
 That's the only download: the voice-activity model ships inside the app, and Whisper is the default
-engine for English and Hindi.
+engine for English and Hindi. The model lives in **`~/Library/Application Support/VoiceType/Models`**,
+the same folder whether Homebrew or Import put it there, so updating VoiceType never downloads or
+imports it again. (Models imported by version 1.0 are moved there on first launch.)
 
 > Rebuilt the app? macOS ties permissions to the exact build for ad-hoc-signed apps. If dictation
 > stops pasting after an update, remove VoiceType from Privacy & Security → Accessibility and add it again.
@@ -79,7 +82,9 @@ The same files as the phone (`voiceapk/models`):
 | `whisper/` | `small-encoder.int8.onnx`, `small-decoder.int8.onnx`, `small-tokens.txt` | Hindi + English |
 
 **Default: whisper.cpp on the GPU.** The Setup's **Download** button fetches
-**`ggml-large-v3-turbo-q5_0.bin`** (548 MB) from <https://huggingface.co/ggerganov/whisper.cpp>
+**`ggml-large-v3-turbo-q5_0.bin`** (548 MB) from this project's
+[`models-v1` release](https://github.com/CurlyRishabh/VoiceType/releases/tag/models-v1), the file
+Homebrew's `voicetype-model` cask installs too
 (SHA-256 `394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2`, checked on import).
 Any other whisper.cpp `ggml-*.bin` can be imported the same way; the newest import replaces the old
 one. Older setups keep working: the sherpa-onnx Whisper ONNX files and Moonshine can still be
@@ -113,11 +118,13 @@ network entitlement anyway. If the model isn't available, the instant rules are 
 codesign -d --entitlements - /Applications/VoiceType.app
 ```
 You'll see `com.apple.security.app-sandbox = true`, `device.audio-input`,
-`files.user-selected.read-only`, and **no** `com.apple.security.network.client` or `network.server`.
+`files.user-selected.read-only`, one `temporary-exception.files.home-relative-path.read-write` for
+`/Library/Application Support/VoiceType/` (the models folder, nothing else in your home folder), and
+**no** `com.apple.security.network.client` or `network.server`.
 A sandboxed app without those can't open network connections; the kernel refuses them. You can
 also turn Wi-Fi off and dictate normally, or watch `nettop -p VoiceType` (it never shows a
-connection). Settings, history and models live only in
-`~/Library/Containers/dev.offline.voicetype.mac/` and are excluded from Time Machine.
+connection). Settings and history live only in `~/Library/Containers/dev.offline.voicetype.mac/`,
+models in `~/Library/Application Support/VoiceType/Models`; both are excluded from Time Machine.
 
 ## Build from source
 

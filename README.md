@@ -35,8 +35,8 @@ These links always point to the newest version:
 | | Download | Then |
 |---|---|---|
 | **Android** (12+, arm64) | [**VoiceType.apk**](https://github.com/CurlyRishabh/VoiceType/releases/latest/download/VoiceType.apk) (~58 MB) | Open it on the phone and allow "Install unknown apps", or `adb install VoiceType.apk`. Then follow §5. |
-| **macOS** (15+, Apple silicon) | `brew install --cask curlyrishabh/tap/voicetype` or [**VoiceType.dmg**](https://github.com/CurlyRishabh/VoiceType/releases/latest/download/VoiceType.dmg) (~13 MB) | Open VoiceType. Its Setup window has a **Download** button for the one speech model (548 MB) and an **Import** button. See [`mac/README.md`](mac/README.md). |
-| **Speech models** (Android) | [**VoiceTypeModels.zip**](https://github.com/CurlyRishabh/VoiceType/releases/latest/download/VoiceTypeModels.zip) (~660 MB) | Unzip, then import the folders in the app (§4). Contains Silero VAD, Moonshine (English) and Whisper small (Hindi + English). The Mac doesn't need this. |
+| **macOS** (15+, Apple silicon) | `brew install --cask curlyrishabh/tap/voicetype` or [**VoiceType.dmg**](https://github.com/CurlyRishabh/VoiceType/releases/latest/download/VoiceType.dmg) (~13 MB) | Homebrew also installs the speech model (548 MB). With the DMG, VoiceType's Setup window has a **Download** button for it and an **Import** button. See [`mac/README.md`](mac/README.md). |
+| **Speech models** (Android) | [**VoiceTypeModels.zip**](https://github.com/CurlyRishabh/VoiceType/releases/download/models-v1/VoiceTypeModels.zip) (~660 MB) | Unzip, then import the folders in the app (§4). Contains Silero VAD, Moonshine (English) and Whisper small (Hindi + English). The Mac doesn't need this. |
 
 The apps aren't from an app store, so you'll see an expected warning the first time:
 
@@ -63,9 +63,9 @@ models yourself (§4).
 
 ### Quick start
 
-**Mac:** `brew install --cask curlyrishabh/tap/voicetype` (or [the DMG](#download)), open VoiceType,
-and follow its Setup window: allow the permissions, click **Download** for the speech model, then
-**Import** it. Hold **fn** and talk.
+**Mac:** `brew install --cask curlyrishabh/tap/voicetype` (it installs the speech model too), open
+VoiceType and follow its Setup window to allow the permissions. With [the DMG](#download) instead,
+the Setup window also has you **Download** and **Import** the speech model once. Hold **fn** and talk.
 
 **Android:**
 

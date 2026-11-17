@@ -254,7 +254,9 @@ final class Dictation {
     }
 
     private func saveRecording(_ samples: [Float]) {
-        let dir = models.root.deletingLastPathComponent().appendingPathComponent("recordings")
+        // Debug recordings stay private, in the app's container (not next to the shared models).
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("VoiceType/recordings", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("rec-\(Int(Date().timeIntervalSince1970)).wav")
         guard let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(sampleRate), channels: 1, interleaved: false),
