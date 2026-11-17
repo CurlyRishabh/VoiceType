@@ -26,6 +26,8 @@ final class Dictation {
     var onMessage: ((String) -> Void)?
     /// The recording stopped by itself (time limit, mic error); the gesture must reset.
     var onEndedByItself: (() -> Void)?
+    /// A new dictation was asked for while the last one is still being transcribed or typed.
+    var onBusy: (() -> Void)?
 
     private(set) var state: State = .idle { didSet { onState?(state) } }
     private(set) var handsFree = false
@@ -78,7 +80,10 @@ final class Dictation {
     /// Starts recording (provisionally). Returns false and reports why if it can't.
     @discardableResult
     func begin() -> Bool {
-        guard state == .idle, recorder == nil else { return false }
+        guard state == .idle, recorder == nil else {
+            if recorder == nil { onBusy?() }
+            return false
+        }
         spec = AppSettings.engineSpec(models)
         let slot: ModelSlot = spec.kind == .fastEnglish ? .moonshine : .whisper
         guard models.isReady(slot) else { onMessage?("Speech model not imported"); return false }

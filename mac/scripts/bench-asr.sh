@@ -8,6 +8,8 @@
 #   clean  LibriSpeech test-clean   English audiobooks, clear speech      (347 MB, openslr.org/12)
 #   other  LibriSpeech test-other   English, harder speakers/recordings   (329 MB, openslr.org/12)
 #   hindi  Google FLEURS hi_in test Real Hindi speech, read Wikipedia      (249 MB, CC-BY-4.0)
+#          Not downloaded by this script: save the hi_in test audio archive and transcript list
+#          as bench-data/downloads/fleurs-hi_in-test.tar.gz and fleurs-hi_in-test.tsv first.
 #   cv     Mozilla Common Voice     Accents, everyday speech. Not downloadable automatically:
 #          get a language from https://datacollective.mozillafoundation.org (free account),
 #          extract it, and pass the folder that holds test.tsv and clips/ with --cv.
@@ -39,7 +41,6 @@ done
 DATA="$ROOT/bench-data"
 OUT="$DATA/results"
 mkdir -p "$DATA/downloads" "$OUT"
-FLEURS_REV="70bb2e84b976b7e960aa89f1c648e09c59f894dd"
 
 # fetch <url> <file> <md5|sha256> <hash>
 fetch() {
@@ -75,10 +76,16 @@ for path, text in rows[::step][:n]:
 PY
 }
 
+# local <file> <sha256>: a dataset file the user saved in bench-data/downloads/ (not downloaded here)
+local_file() {
+  local file="$DATA/downloads/$1"
+  [[ -f "$file" ]] || { echo "missing $file (see the hindi set at the top of this script)" >&2; exit 1; }
+  [[ "$(shasum -a 256 "$file" | awk '{print $1}')" == "$2" ]] || { echo "checksum mismatch for $1" >&2; exit 1; }
+}
+
 manifest_fleurs_hindi() {
-  local base="https://huggingface.co/datasets/google/fleurs/resolve/$FLEURS_REV/data/hi_in"
-  fetch "$base/audio/test.tar.gz" "fleurs-hi_in-test.tar.gz" sha256 47c238b9cf7016ba596639bb3038b0c89dc6e85759f16d09c4f58c6dfa25c65f
-  fetch "$base/test.tsv" "fleurs-hi_in-test.tsv" sha256 889e82e2875490f9533ff59ab67326fcfa01cf828fc4412758aaaa1f442a729f
+  local_file "fleurs-hi_in-test.tar.gz" 47c238b9cf7016ba596639bb3038b0c89dc6e85759f16d09c4f58c6dfa25c65f
+  local_file "fleurs-hi_in-test.tsv" 889e82e2875490f9533ff59ab67326fcfa01cf828fc4412758aaaa1f442a729f
   if [[ ! -d "$DATA/fleurs-hi_in" ]]; then
     mkdir -p "$DATA/fleurs-hi_in"
     tar xzf "$DATA/downloads/fleurs-hi_in-test.tar.gz" -C "$DATA/fleurs-hi_in"

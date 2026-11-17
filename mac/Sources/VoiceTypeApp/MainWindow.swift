@@ -204,6 +204,16 @@ private struct HistoryView: View {
         return out
     }
 
+    /// "Last 7 days · 1,240 words · 132 wpm · 18 min saved"; nil before the first dictation.
+    private var statsLine: String? {
+        let s = UsageStats.lastSevenDays(history.items.map { .init(date: $0.date, text: $0.text, audioMillis: $0.audioMillis) })
+        guard s.words > 0 else { return nil }
+        var parts = ["Last 7 days", "\(s.words.formatted()) word\(s.words == 1 ? "" : "s")"]
+        if s.wordsPerMinute > 0 { parts.append("\(s.wordsPerMinute) wpm") }
+        if s.minutesSaved > 0 { parts.append("\(s.minutesSaved) min saved vs typing") }
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
         let q = model.historyQuery.lowercased()
         let items = q.isEmpty ? history.items : history.items.filter { $0.text.lowercased().contains(q) || $0.raw.lowercased().contains(q) }
@@ -216,11 +226,18 @@ private struct HistoryView: View {
             .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
             .padding(.horizontal, 24).padding(.top, 16).padding(.bottom, 8)
 
+            if let line = statsLine {
+                Text(line)
+                    .font(.system(size: 12).monospacedDigit()).foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 36).padding(.bottom, 4)
+            }
+
             if items.isEmpty {
                 VStack(spacing: 6) {
                     Text(history.items.isEmpty ? "Nothing yet" : "No matches").font(.system(size: 15, weight: .semibold))
                     if history.items.isEmpty {
-                        Text("Hold \(triggerName) anywhere and start talking. Double-tap it for hands-free; esc cancels.")
+                        Text("Hold \(triggerName) anywhere and start talking. Double-tap it\(KeyMonitor.handsFreeShortcutOn ? " (or press ⇧⌥ Space)" : "") for hands-free; esc cancels.")
                             .font(.system(size: 13)).foregroundColor(.secondary).multilineTextAlignment(.center)
                     }
                 }
@@ -461,6 +478,7 @@ struct SettingsPane: View {
     @ObservedObject var model: MainModel
     @ObservedObject var history: HistoryStore
     @AppStorage(Key.trigger) var trigger = TriggerKey.fn.rawValue
+    @AppStorage(Key.handsFreeShortcut) var handsFreeShortcut = true
     @AppStorage(Key.language) var language = "en"
     @AppStorage(Key.englishEngine) var engine = EngineKind.hindiEnglish.rawValue
     @AppStorage(Key.script) var script = "latin"
@@ -482,22 +500,19 @@ struct SettingsPane: View {
     /// Only what still needs doing; an empty list collapses to one "all set" row.
     private var issues: [Issue] {
         var out: [Issue] = []
-        if AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
-            out.append(Issue(id: "Microphone", button: "Allow…") {
-                AVCaptureDevice.requestAccess(for: .audio) { _ in DispatchQueue.main.async { model.refresh += 1 } }
-                openPrivacy("Privacy_Microphone")
+        // Each asks macOS first (which lists VoiceType in System Settings), then opens the pane on later presses.
+        func ask(_ kind: Permissions.Kind, _ title: String) {
+            guard !Permissions.isGranted(kind) else { return }
+            out.append(Issue(id: title, button: Permissions.buttonTitle(kind)) {
+                Permissions.request(kind) {
+                    if kind == .inputMonitoring { app.applyTrigger() }
+                    model.refresh += 1
+                }
             })
         }
-        if !Inserter.isTrusted {
-            out.append(Issue(id: "Accessibility (auto-paste)", button: "Allow…") {
-                Inserter.requestTrust(); openPrivacy("Privacy_Accessibility")
-            })
-        }
-        if trigger != TriggerKey.optionSpace.rawValue, !KeyMonitor.hasInputMonitoring {
-            out.append(Issue(id: "Input Monitoring (\(TriggerKey.current.title) key)", button: "Allow…") {
-                KeyMonitor.requestInputMonitoring(); openPrivacy("Privacy_ListenEvent")
-            })
-        }
+        ask(.microphone, "Microphone")
+        ask(.accessibility, "Accessibility (auto-paste)")
+        if trigger != TriggerKey.optionSpace.rawValue { ask(.inputMonitoring, "Input Monitoring (\(TriggerKey.current.title) key)") }
         if trigger == TriggerKey.fn.rawValue, FnKeySetting.isDoNothing == false {
             out.append(Issue(id: "Set “Press fn key to” to Do Nothing", button: "Open Keyboard Settings") {
                 FnKeySetting.openKeyboardSettings()
@@ -516,9 +531,16 @@ struct SettingsPane: View {
                 Picker("Dictation key", selection: $trigger) {
                     ForEach(TriggerKey.allCases, id: \.rawValue) { Text($0.title).tag($0.rawValue) }
                 }
+                Toggle(isOn: $handsFreeShortcut) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Hands-free shortcut: ⇧⌥ Space")
+                        Text("Press once to start, again to finish. Works alongside double-tapping the dictation key.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }
                 LabeledContent("Language") {
                     Picker("Language", selection: $language) {
-                        Text("English").tag("en"); Text("हिंदी").tag("hi"); Text("Auto").tag("auto")
+                        Text("English").tag("en"); Text("हिंदी").tag("hi"); Text("Both").tag("auto")
                     }
                     .pickerStyle(.segmented).labelsHidden().fixedSize()
                 }
@@ -545,6 +567,10 @@ struct SettingsPane: View {
                             Spacer()
                             Button(issue.button, action: issue.action)
                         }
+                    }
+                    if [Permissions.Kind.microphone, .accessibility, .inputMonitoring].contains(where: { Permissions.hasAsked($0) && !Permissions.isGranted($0) }) {
+                        Text("VoiceType is already in those lists in System Settings. Switch it on there; you don’t need to add it.")
+                            .font(.caption).foregroundColor(.secondary)
                     }
                     Button("Run setup again") { app.showOnboarding() }
                 }
@@ -613,6 +639,7 @@ struct SettingsPane: View {
             Text("This can’t be undone.")
         }
         .onChange(of: trigger) { _ in app.applyTrigger(); model.refresh += 1 }
+        .onChange(of: handsFreeShortcut) { _ in app.applyTrigger() }
         .onChange(of: language) { _ in app.dictation.warmUp(); model.refresh += 1 }
         .onChange(of: engine) { _ in model.refresh += 1 }
         .onChange(of: flowBarIdle) { _ in app.flowBar.refreshIdleVisibility() }

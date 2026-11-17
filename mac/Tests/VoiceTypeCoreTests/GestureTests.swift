@@ -50,6 +50,44 @@ struct GestureTests {
         #expect(g.state == .idle)
     }
 
+    @Test func handsFreeKeyStartsAndFinishes() {
+        var g = TriggerGesture()
+        #expect(g.handle(.handsFreeKey) == [.begin, .becameHandsFree])
+        #expect(g.handle(.tick(30)) == [])
+        #expect(g.handle(.otherKey) == [])              // typing meanwhile is fine
+        #expect(g.handle(.handsFreeKey) == [.finish])
+        #expect(g.state == .idle)
+    }
+
+    @Test func handsFreeKeyLocksAHold() {
+        var g = TriggerGesture()
+        _ = run([.keyDown(0), .tick(0.3)], into: &g)
+        #expect(g.handle(.handsFreeKey) == [.becameHandsFree])
+        #expect(g.handle(.keyUp(2)) == [])              // letting go of fn no longer stops it
+        #expect(g.handle(.keyDown(9)) == [.finish])
+    }
+
+    @Test func handsFreeKeyDuringATapKeepsRecording() {
+        var g = TriggerGesture()
+        _ = run([.keyDown(0), .keyUp(0.1)], into: &g)
+        #expect(g.handle(.handsFreeKey) == [.becameHandsFree])
+        #expect(g.handle(.tick(0.5)) == [])             // no "single tap" cancel afterwards
+        #expect(g.state == .handsFree)
+    }
+
+    @Test func handsFreeKeyFinishesOnlyOnce() {
+        var g = TriggerGesture()
+        _ = g.handle(.handsFreeKey)
+        #expect(g.handle(.escape) == [.cancel])
+        #expect(g.handle(.handsFreeKey) == [.begin, .becameHandsFree]) // a fresh session
+    }
+
+    @Test func doubleTapWithinASlowerWindow() {
+        var g = TriggerGesture()
+        g.doubleTapWindow = 0.5                          // macOS's default double-click speed
+        #expect(run([.keyDown(0), .keyUp(0.12), .keyDown(0.55)], into: &g) == [.begin, .becameHandsFree])
+    }
+
     @Test func slowSecondTapStartsAFreshPress() {
         var g = TriggerGesture()
         _ = run([.keyDown(0), .keyUp(0.1)], into: &g)
@@ -134,5 +172,21 @@ struct AppStyleTests {
         #expect(s.wordsPerMinute == 120)
         #expect(UsageStats.wordCount("नमस्ते, मेरा नाम राहुल है") == 5)
         #expect(UsageStats(words: 900, speakingMinutes: 6).minutesSaved == 14)
+    }
+
+    @Test func statsIgnoreUntimedHistoryForSpeed() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let entries = [
+            UsageStats.Entry(date: now.addingTimeInterval(-60), text: "one two three four five six", audioMillis: 3000),
+            UsageStats.Entry(date: now.addingTimeInterval(-120), text: Array(repeating: "old", count: 50).joined(separator: " "), audioMillis: nil),
+        ]
+        let s = UsageStats.lastSevenDays(entries, now: now)
+        #expect(s.words == 56)            // every word counts towards the total
+        #expect(s.wordsPerMinute == 120)  // but only timed ones towards speed (not 1120)
+    }
+
+    @Test func statsWithNothingTimed() {
+        let s = UsageStats.lastSevenDays([UsageStats.Entry(date: Date(), text: "hello there", audioMillis: nil)])
+        #expect(s.words == 2 && s.wordsPerMinute == 0 && s.minutesSaved == 0)
     }
 }

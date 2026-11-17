@@ -82,3 +82,24 @@ public struct CleanupSettings: Sendable {
     public var polishStyle: PolishStyle = .casual
     public init() {}
 }
+
+/// The languages picked in setup, stored as the single `language` setting the engine reads:
+/// English only = "en", Hindi only = "hi", both = "auto" (Whisper works out which one each time).
+public enum LanguageSelection {
+    /// In the order they are offered.
+    public static let codes = ["en", "hi"]
+
+    public static func languages(for setting: String?) -> Set<String> {
+        switch setting {
+        case "hi": return ["hi"]
+        case "auto": return ["en", "hi"]
+        default: return ["en"]
+        }
+    }
+
+    /// nil when nothing is picked: at least one language is needed.
+    public static func setting(for languages: Set<String>) -> String? {
+        let known = languages.intersection(codes)
+        return known.count > 1 ? "auto" : known.first
+    }
+}

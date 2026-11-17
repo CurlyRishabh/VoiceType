@@ -126,12 +126,13 @@ public enum KnownModels {
     }
 
     /// The default speech model: Whisper large-v3-turbo for whisper.cpp (English + Hindi, GPU).
+    /// Served from this project's GitHub release; the size and SHA-256 are checked at import.
     public static let recommended = Download(
         fileName: "ggml-large-v3-turbo-q5_0.bin", bytes: 574_041_195,
         sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
-        url: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin")!)
+        url: URL(string: "https://github.com/CurlyRishabh/VoiceType/releases/latest/download/ggml-large-v3-turbo-q5_0.bin")!)
 
-    /// Official whisper.cpp files (huggingface.co/ggerganov/whisper.cpp) by name.
+    /// The official whisper.cpp model files, by name.
     public static let whisperCpp: [String: (bytes: Int64, sha256: String)] = [
         "ggml-large-v3-turbo-q5_0.bin": (574_041_195, "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"),
         "ggml-large-v3-turbo-q8_0.bin": (874_188_075, "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1"),

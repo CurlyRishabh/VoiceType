@@ -5,19 +5,34 @@ import VoiceTypeCore
 
 final class OnboardingModel: ObservableObject {
     enum Step: Int, CaseIterable {
-        case microphone, typing, key, models, tryIt
+        case languages, microphone, typing, key, models, tryIt
         var title: String {
             switch self {
+            case .languages: return "Languages"
             case .microphone: return "Microphone"
-            case .typing: return "Typing permission"
+            case .typing: return "Typing"
             case .key: return "Dictation key"
             case .models: return "Models"
             case .tryIt: return "Try it"
             }
         }
+
+        func isDone(_ app: AppDelegate) -> Bool {
+            switch self {
+            case .languages: return true // there is always a valid choice (English by default)
+            case .microphone: return Permissions.isGranted(.microphone)
+            case .typing: return Permissions.isGranted(.accessibility)
+            case .key: return TriggerKey.current == .optionSpace || Permissions.isGranted(.inputMonitoring)
+            case .models: return app.models.isReady(.vad) && (app.models.isReady(.moonshine) || app.models.isReady(.whisper))
+            case .tryIt: return !app.history.items.isEmpty
+            }
+        }
     }
 
-    @Published var step: Step = .microphone
+    /// Saved, so setup picks up where it was after macOS's "Quit & Reopen" for Input Monitoring.
+    @Published var step: Step = Step(rawValue: UserDefaults.standard.integer(forKey: Key.onboardingStep)) ?? .languages {
+        didSet { UserDefaults.standard.set(step.rawValue, forKey: Key.onboardingStep) }
+    }
     @Published var refresh = 0
     @Published var tryText = ""
     @Published var importReport = ""
@@ -26,13 +41,15 @@ final class OnboardingModel: ObservableObject {
 struct OnboardingView: View {
     let app: AppDelegate
     @ObservedObject var model: OnboardingModel
+    @AppStorage(Key.language) var language = "en"
+    @AppStorage(Key.script) var script = "latin"
 
     var body: some View {
         let _ = model.refresh
         VStack(spacing: 26) {
             HStack(spacing: 8) {
                 ForEach(OnboardingModel.Step.allCases, id: \.rawValue) { s in
-                    let done = isDone(s)
+                    let done = s.isDone(app)
                     let current = s == model.step
                     HStack(spacing: 6) {
                         if done && !current { Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)) }
@@ -47,6 +64,7 @@ struct OnboardingView: View {
             }
             Group {
                 switch model.step {
+                case .languages: languages
                 case .microphone: microphone
                 case .typing: typing
                 case .key: key
@@ -57,7 +75,7 @@ struct OnboardingView: View {
             .frame(maxWidth: 560, alignment: .leading)
             Spacer(minLength: 0)
             HStack {
-                if model.step != .microphone {
+                if model.step != .languages {
                     Button("Back") { model.step = OnboardingModel.Step(rawValue: model.step.rawValue - 1)! }
                 }
                 Spacer()
@@ -75,16 +93,6 @@ struct OnboardingView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refresh += 1 }
     }
 
-    private func isDone(_ s: OnboardingModel.Step) -> Bool {
-        switch s {
-        case .microphone: return AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
-        case .typing: return Inserter.isTrusted
-        case .key: return TriggerKey.current == .optionSpace || KeyMonitor.hasInputMonitoring
-        case .models: return app.models.isReady(.vad) && (app.models.isReady(.moonshine) || app.models.isReady(.whisper))
-        case .tryIt: return !app.history.items.isEmpty
-        }
-    }
-
     private func step(_ title: String, _ body: String, done: Bool, @ViewBuilder actions: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
@@ -96,32 +104,125 @@ struct OnboardingView: View {
         }
     }
 
-    private var microphone: some View {
-        step("Let VoiceType hear you",
-             "Audio is processed on this Mac and discarded right after it is turned into text. The app cannot reach the internet.",
-             done: isDone(.microphone)) {
-            Button("Allow microphone") {
-                AVCaptureDevice.requestAccess(for: .audio) { _ in DispatchQueue.main.async { model.refresh += 1 } }
+    // MARK: Languages
+
+    private var languages: some View {
+        let picked = LanguageSelection.languages(for: language)
+        return VStack(alignment: .leading, spacing: 16) {
+            step("Which languages do you speak?",
+                 "Pick every language you dictate in. Pick both if you mix them, like Hinglish: VoiceType then works out which one you’re speaking each time.",
+                 done: false) { EmptyView() }
+            VStack(spacing: 0) {
+                ForEach(LanguageSelection.codes, id: \.self) { code in
+                    if code != LanguageSelection.codes.first { Divider() }
+                    languageRow(code, picked)
+                }
             }
-            Button("Open Privacy settings") { openPrivacy("Privacy_Microphone") }
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.12)))
+            if picked.contains("hi") {
+                HStack {
+                    Text("Write Hindi in").font(.system(size: 13))
+                    Spacer()
+                    Picker("Write Hindi in", selection: $script) {
+                        Text("Latin: kal meeting hai").tag("latin")
+                        Text("देवनागरी: कल मीटिंग है").tag("devanagari")
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                }
+            }
+            Text("You can change this any time in Settings or from the menu bar.")
+                .font(.system(size: 12)).foregroundColor(.secondary)
+        }
+    }
+
+    private func languageRow(_ code: String, _ picked: Set<String>) -> some View {
+        let on = picked.contains(code)
+        let isOnlyPick = on && picked.count == 1
+        return Button {
+            var next = picked
+            if on { next.remove(code) } else { next.insert(code) }
+            // nil = nothing left picked: keep the last language.
+            if let setting = LanguageSelection.setting(for: next) { language = setting }
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: on ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 16))
+                    .foregroundColor(on ? .accentColor : .secondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(code == "hi" ? "हिंदी (Hindi)" : "English").font(.system(size: 14, weight: .semibold))
+                    Text(code == "hi" ? "Also Hinglish: Hindi mixed with English words" : "Picked on its own, VoiceType never has to guess the language")
+                        .font(.system(size: 12)).foregroundColor(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(.isToggle)
+        .accessibilityValue(on ? "on" : "off")
+        .help(isOnlyPick ? "Pick another language before turning this one off" : "")
+    }
+
+    // MARK: Permissions
+
+    /// "VoiceType is already in the list; switch it on." Shown once VoiceType has asked.
+    @ViewBuilder private func switchItOnHint(_ kind: Permissions.Kind, _ list: String) -> some View {
+        if Permissions.hasAsked(kind) && !Permissions.isGranted(kind) {
+            VStack(alignment: .leading, spacing: 4) {
+                Label("VoiceType is already in the \(list) list. Switch it on there; you don’t need to add it.",
+                      systemImage: "info.circle")
+                Text("Switched on but still not working? Rebuilt copies of VoiceType count as a new app: select VoiceType, remove it with −, then press the button again.")
+                    .foregroundColor(.secondary).padding(.leading, 22)
+            }
+            .font(.system(size: 12))
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var microphone: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            step("Let VoiceType hear you",
+                 "Audio is processed on this Mac and discarded right after it is turned into text. The app cannot reach the internet.",
+                 done: Permissions.isGranted(.microphone)) {
+                if !Permissions.isGranted(.microphone) {
+                    Button(Permissions.hasAsked(.microphone) ? "Open System Settings" : "Allow microphone") {
+                        Permissions.request(.microphone) { model.refresh += 1 }
+                    }
+                }
+            }
+            switchItOnHint(.microphone, "Microphone")
         }
     }
 
     private var typing: some View {
-        step("Let VoiceType type for you",
-             "Accessibility lets VoiceType press ⌘V in the app you’re typing in, and look at the text around your cursor for spacing and capitals. Turn VoiceType on in the list. Without it, text is copied and you paste it yourself.",
-             done: isDone(.typing)) {
-            Button("Allow typing") { Inserter.requestTrust(); openPrivacy("Privacy_Accessibility") }
+        VStack(alignment: .leading, spacing: 14) {
+            step("Let VoiceType type for you",
+                 "Accessibility lets VoiceType press ⌘V in the app you’re typing in, and look at the text around your cursor for spacing and capitals. Without it, text is copied and you paste it yourself.",
+                 done: Permissions.isGranted(.accessibility)) {
+                if !Permissions.isGranted(.accessibility) {
+                    Button(Permissions.hasAsked(.accessibility) ? "Open System Settings" : "Allow typing") {
+                        Permissions.request(.accessibility) { model.refresh += 1 }
+                    }
+                }
+            }
+            switchItOnHint(.accessibility, "Accessibility")
         }
     }
 
     private var key: some View {
         VStack(alignment: .leading, spacing: 16) {
             step("Make fn start dictation",
-                 "Hold fn to talk; double-tap it for hands-free. VoiceType needs Input Monitoring to notice fn in other apps. It only reacts to fn and esc and never records what you type.",
-                 done: isDone(.key)) {
-                Button("Allow Input Monitoring") { KeyMonitor.requestInputMonitoring(); openPrivacy("Privacy_ListenEvent"); app.applyTrigger() }
+                 "Hold fn to talk; double-tap it, or press ⇧⌥ Space, for hands-free. VoiceType needs Input Monitoring to notice fn in other apps. It only reacts to fn and esc and never records what you type.",
+                 done: model.step.isDone(app)) {
+                if TriggerKey.current != .optionSpace && !Permissions.isGranted(.inputMonitoring) {
+                    Button(Permissions.hasAsked(.inputMonitoring) ? "Open System Settings" : "Allow Input Monitoring") {
+                        Permissions.request(.inputMonitoring) { app.applyTrigger(); model.refresh += 1 }
+                    }
+                }
             }
+            if TriggerKey.current != .optionSpace { switchItOnHint(.inputMonitoring, "Input Monitoring") }
             VStack(alignment: .leading, spacing: 8) {
                 Text("System Settings → Keyboard → “Press fn key to”").font(.system(size: 13)).foregroundColor(.secondary)
                 HStack {
@@ -151,11 +252,13 @@ struct OnboardingView: View {
         model.refresh += 1
     }
 
+    // MARK: Models and trying it
+
     private var models: some View {
         VStack(alignment: .leading, spacing: 14) {
             step("Get the speech model",
                  "One file (\(KnownModels.recommended.sizeText)). VoiceType never goes online, so your browser downloads it:\n1. Click Download and wait for it to finish.\n2. Click Import and choose \(KnownModels.recommended.fileName) in Downloads.\nVoiceType checks the file and copies it in; you can delete the download afterwards.",
-                 done: isDone(.models)) {
+                 done: model.step.isDone(app)) {
                 Button("Download (\(KnownModels.recommended.sizeText))") { app.downloadModel() }
                 Button("Import…") { app.importModels { model.importReport = $0; model.refresh += 1 } }
             }
@@ -168,8 +271,11 @@ struct OnboardingView: View {
 
     private var tryIt: some View {
         let key = TriggerKey.current == .fn ? "fn" : TriggerKey.current.title
+        let picked = LanguageSelection.languages(for: language)
+        let phrase = picked == ["hi"] ? "“Namaste, yeh meri pehli dictation hai.”" : "“Hello, this is my first dictation, full stop.”"
         return VStack(alignment: .leading, spacing: 14) {
-            step("Try it", "Click in the box, hold \(key) and say “Hello, this is my first dictation, full stop.” Release to type it. Then try double-tapping \(key) for hands-free.", done: isDone(.tryIt)) {
+            step("Try it", "Click in the box, hold \(key) and say \(phrase) Release to type it. Then try double-tapping \(key) (or pressing ⇧⌥ Space) for hands-free.",
+                 done: model.step.isDone(app)) {
                 EmptyView()
             }
             TextEditor(text: $model.tryText)

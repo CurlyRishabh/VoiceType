@@ -242,3 +242,15 @@ struct AudioLogicTests {
         #expect(!WhisperPrompt.isEcho("", prompt: prompt))
     }
 }
+
+struct LanguageSelectionTests {
+    @Test func roundTrip() {
+        for setting in ["en", "hi", "auto"] {
+            #expect(LanguageSelection.setting(for: LanguageSelection.languages(for: setting)) == setting)
+        }
+    }
+    @Test func bothIsAutoDetect() { #expect(LanguageSelection.setting(for: ["hi", "en"]) == "auto") }
+    @Test func nothingPickedIsRefused() { #expect(LanguageSelection.setting(for: []) == nil) }
+    @Test func unknownCodesAreIgnored() { #expect(LanguageSelection.setting(for: ["fr", "hi"]) == "hi") }
+    @Test func unsetMeansEnglish() { #expect(LanguageSelection.languages(for: nil) == ["en"]) }
+}

@@ -56,11 +56,12 @@ final class FlowBar {
         layout()
     }
 
-    func notice(_ text: String, action: String? = nil, seconds: TimeInterval = 4) {
+    /// `then`: what to show when the notice goes away (decided at that moment).
+    func notice(_ text: String, action: String? = nil, seconds: TimeInterval = 4, then: @escaping () -> FlowModel.Phase = { .idle }) {
         model.notice = text
         model.noticeAction = action
         set(.notice)
-        let item = DispatchWorkItem { [weak self] in self?.set(.idle) }
+        let item = DispatchWorkItem { [weak self] in self?.set(then()) }
         noticeHide = item
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: item)
     }
@@ -133,7 +134,7 @@ struct FlowBarView: View {
                 .frame(width: 46, height: 10)
         }
         .buttonStyle(.plain)
-        .help("Hold fn to dictate · double-tap for hands-free · click to open VoiceType")
+        .help("Hold fn to dictate · double-tap fn or press ⇧⌥ Space for hands-free · click to open VoiceType")
         .accessibilityLabel("Open VoiceType")
     }
 

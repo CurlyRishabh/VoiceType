@@ -77,13 +77,23 @@ public enum AppStyleMap {
     }
 }
 
-/// Numbers for the Home screen, computed from local history only.
+/// Numbers for the top of History, computed from local history only.
 public struct UsageStats: Equatable, Sendable {
     public let words: Int
     public let speakingMinutes: Double
-    public var wordsPerMinute: Int { speakingMinutes < 0.05 ? 0 : Int((Double(words) / speakingMinutes).rounded()) }
+    /// Words from dictations whose length is known (history from before the redesign has none);
+    /// speed and time saved use only these, so old entries can't inflate them.
+    public let timedWords: Int
+
+    public init(words: Int, speakingMinutes: Double, timedWords: Int? = nil) {
+        self.words = words
+        self.speakingMinutes = speakingMinutes
+        self.timedWords = timedWords ?? words
+    }
+
+    public var wordsPerMinute: Int { speakingMinutes < 0.05 ? 0 : Int((Double(timedWords) / speakingMinutes).rounded()) }
     /// Typing the same words at 45 wpm, minus the time spent speaking.
-    public var minutesSaved: Int { max(0, Int((Double(words) / 45.0 - speakingMinutes).rounded())) }
+    public var minutesSaved: Int { max(0, Int((Double(timedWords) / 45.0 - speakingMinutes).rounded())) }
 
     public struct Entry: Sendable {
         public let date: Date
@@ -96,8 +106,9 @@ public struct UsageStats: Equatable, Sendable {
         let since = now.addingTimeInterval(-7 * 24 * 3600)
         let recent = entries.filter { $0.date >= since && $0.date <= now }
         let words = recent.reduce(0) { $0 + wordCount($1.text) }
-        let minutes = recent.reduce(0.0) { $0 + Double($1.audioMillis ?? 0) / 60_000 }
-        return UsageStats(words: words, speakingMinutes: minutes)
+        let timed = recent.filter { ($0.audioMillis ?? 0) > 0 }
+        let minutes = timed.reduce(0.0) { $0 + Double($1.audioMillis ?? 0) / 60_000 }
+        return UsageStats(words: words, speakingMinutes: minutes, timedWords: timed.reduce(0) { $0 + wordCount($1.text) })
     }
 
     public static func wordCount(_ text: String) -> Int {

@@ -16,10 +16,14 @@ Needs an Apple-silicon Mac (M1 or newer) on macOS 15+.
    This is an ad-hoc-signed build: the first time, macOS says it can't verify the developer. Go to
    **System Settings → Privacy & Security → Open Anyway**.
 3. **The Setup window** walks you through the rest:
-   * **Microphone**: click *Allow*.
-   * **Accessibility (auto-paste)**: click *Allow*, then switch **VoiceType** on in the list.
-   * **Input Monitoring** for the fn key, and "Press 🌐 key to" set to **Do Nothing** (or pick
-     ⌥ Space, which needs neither).
+   * **Languages**: tick the ones you dictate in: English, हिंदी (Hindi), or both for Hinglish.
+     With Hindi you also pick Latin ("kal meeting hai") or Devanagari ("कल मीटिंग है") output.
+   * **Microphone**: click *Allow microphone* and choose **Allow** in the macOS dialog.
+   * **Accessibility (auto-paste)** and **Input Monitoring** (for the fn key): click *Allow*. macOS
+     adds VoiceType to the list in Privacy & Security and offers to open it; just **switch VoiceType
+     on**, there's no need to add it with +. Also set "Press 🌐 key to" to **Do Nothing** (or pick
+     ⌥ Space, which needs no Input Monitoring). If macOS asks to *Quit & Reopen* VoiceType, do;
+     setup carries on where it was.
    * **Speech model**: click **Download** (your browser downloads one 548 MB file), then **Import…**
      and choose `ggml-large-v3-turbo-q5_0.bin` in Downloads. VoiceType checks its size and SHA-256,
      copies it into its private container, and you can delete the download.
@@ -35,7 +39,8 @@ engine for English and Hindi.
 | Do this | What happens |
 |---|---|
 | **Hold fn** and talk | Records while you hold, through pauses. Release and the text is typed. |
-| **Double-tap fn** | Hands-free: keeps listening until you **tap fn** again (or click ■ on the flow bar). |
+| **Double-tap fn** | Hands-free: keeps listening until you **tap fn** again (or click ■ on the flow bar). A double-tap can be as slow as your double-click speed (System Settings → Mouse/Trackpad). |
+| **⇧⌥ Space** | Also hands-free: press once to start, again to finish. Needs no permission. Pressed while holding fn, it keeps the recording going after you let go. Turn it off in Settings → Dictation. |
 | **esc** (or ✕) | Cancels; nothing is typed. |
 | **fn + another key** | Works as normal (fn+arrows, F-keys); dictation ignores it. |
 

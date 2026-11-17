@@ -21,10 +21,13 @@ enum Inserter {
     static func focusedContext() -> (before: String?, after: String?) {
         guard isTrusted else { return (nil, nil) }
         let system = AXUIElementCreateSystemWide()
+        // Asked on every dictation start: a busy app must not stall it (the default wait is 6 s).
+        AXUIElementSetMessagingTimeout(system, 0.25)
         var focused: CFTypeRef?
         guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
               let el = focused, CFGetTypeID(el) == AXUIElementGetTypeID() else { return (nil, nil) }
         let element = el as! AXUIElement
+        AXUIElementSetMessagingTimeout(element, 0.25)
         var subrole: CFTypeRef?
         AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subrole)
         if (subrole as? String) == (kAXSecureTextFieldSubrole as String) { return (nil, nil) } // never read passwords

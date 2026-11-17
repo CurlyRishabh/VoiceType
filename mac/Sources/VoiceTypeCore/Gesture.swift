@@ -7,6 +7,8 @@ import Foundation
 /// * a single short tap → nothing (the provisional recording is discarded)
 /// * another key while the trigger is down (fn+arrow, fn+F5, ⌥+letter) → normal shortcut, discard
 /// * esc → cancel
+/// * the hands-free key (⇧⌥ Space) → starts hands-free; pressed again it finishes. Pressed while
+///   holding the trigger it locks the recording into hands-free.
 ///
 /// Recording starts on the very first key-down so the first word is never clipped; whether it is
 /// kept is decided later. Pure value type: time is passed in, so every path is unit tested.
@@ -19,6 +21,8 @@ public struct TriggerGesture: Sendable {
         case tick(TimeInterval)
         case stopButton
         case cancelButton
+        /// The separate hands-free shortcut.
+        case handsFreeKey
     }
 
     public enum Effect: Sendable, Equatable {
@@ -43,6 +47,7 @@ public struct TriggerGesture: Sendable {
     }
 
     public var holdThreshold: TimeInterval = 0.30
+    /// The app sets this from the system double-click speed.
     public var doubleTapWindow: TimeInterval = 0.35
     public private(set) var state: State = .idle
 
@@ -61,6 +66,17 @@ public struct TriggerGesture: Sendable {
 
     public mutating func handle(_ event: Event) -> [Effect] {
         switch (state, event) {
+
+        // ---- the hands-free shortcut works from every state
+        case (.idle, .handsFreeKey):
+            state = .handsFree
+            return [.begin, .becameHandsFree]
+        case (.pressed, .handsFreeKey), (.holding, .handsFreeKey), (.awaitingSecondTap, .handsFreeKey):
+            state = .handsFree // already recording: keep it going
+            return [.becameHandsFree]
+        case (.handsFree, .handsFreeKey):
+            state = .idle
+            return [.finish]
 
         // ---- idle
         case (.idle, .keyDown(let t)):

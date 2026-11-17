@@ -25,17 +25,26 @@ enum TriggerKey: String, CaseIterable {
 /// LISTEN-ONLY event tap: it sees key events but cannot block or change them, and it is allowed in
 /// the App Sandbox once the user grants Input Monitoring. Only the trigger key, esc and the fact
 /// that "some other key was pressed" are used; key contents are never recorded.
-/// ⌥ Space keeps using Carbon's RegisterEventHotKey, which needs no permission.
+/// ⌥ Space keeps using Carbon's RegisterEventHotKey, which needs no permission; so does the
+/// separate hands-free shortcut (⇧⌥ Space).
+///
+/// The tap runs on its own thread and stamps each press when it happens. On the main thread a slow
+/// moment (starting the microphone) could delay or drop the release of a quick tap, which turned a
+/// double-tap into a short hold.
 final class KeyMonitor {
-    var onTrigger: ((_ down: Bool) -> Void)?
+    /// Main thread. `time`: when the key moved (system uptime), not when this runs.
+    var onTrigger: ((_ down: Bool, _ time: TimeInterval) -> Void)?
     var onOtherKey: (() -> Void)?
     var onEscape: (() -> Void)?
+    var onHandsFreeKey: (() -> Void)?
 
     private(set) var trigger: TriggerKey = .fn
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
-    private var triggerDown = false
-    private let hotKey = HotKey()
+    private var triggerDown = false // tap thread (or main, for ⌥ Space)
+    private let hotKey = HotKey(id: 1)
+    private let handsFreeHotKey = HotKey(id: 2)
+    private var lastHandsFreePress: TimeInterval = 0
     var pausedUntil: Date?
 
     var isPaused: Bool { (pausedUntil ?? .distantPast) > Date() }
@@ -47,7 +56,17 @@ final class KeyMonitor {
     init() {
         hotKey.onPress = { [weak self] in self?.report(true) }
         hotKey.onRelease = { [weak self] in self?.report(false) }
+        handsFreeHotKey.onPress = { [weak self] in
+            guard let self, !self.isPaused else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            guard now - self.lastHandsFreePress > 0.25 else { return } // ignore key repeat
+            self.lastHandsFreePress = now
+            self.onHandsFreeKey?()
+        }
     }
+
+    /// ⇧⌥ Space starts and stops hands-free dictation (Settings → Dictation).
+    static var handsFreeShortcutOn: Bool { UserDefaults.standard.bool(forKey: Key.handsFreeShortcut) }
 
     /// (Re)configures for the chosen key. Returns false if the event tap couldn't be created
     /// (Input Monitoring not granted yet); the caller retries when the app becomes active.
@@ -59,6 +78,11 @@ final class KeyMonitor {
             hotKey.register(HotKey.Preset(title: "⌥ Space", keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey)))
         } else {
             hotKey.unregister()
+        }
+        if Self.handsFreeShortcutOn {
+            handsFreeHotKey.register(HotKey.Preset(title: "⇧⌥ Space", keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey | shiftKey)))
+        } else {
+            handsFreeHotKey.unregister()
         }
         // The tap also provides esc and "other key" for every trigger, so create it whenever possible.
         if tap == nil { installTap() }
@@ -76,9 +100,17 @@ final class KeyMonitor {
                                         eventsOfInterest: CGEventMask(mask), callback: callback,
                                         userInfo: Unmanaged.passUnretained(self).toOpaque()) else { return }
         tap = t
-        source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, t, 0)
-        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
-        CGEvent.tapEnable(tap: t, enable: true)
+        let src = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, t, 0)
+        source = src
+        // Its own thread, so nothing the app does on the main thread can delay or drop a key event.
+        let thread = Thread {
+            CFRunLoopAddSource(CFRunLoopGetCurrent(), src, .commonModes)
+            CGEvent.tapEnable(tap: t, enable: true)
+            CFRunLoopRun()
+        }
+        thread.name = "VoiceType key listener"
+        thread.qualityOfService = .userInteractive
+        thread.start()
     }
 
     private func handle(_ type: CGEventType, _ event: CGEvent) {
@@ -108,30 +140,41 @@ final class KeyMonitor {
         }
     }
 
+    /// Called on the tap thread (fn, right ⌥) or the main thread (⌥ Space).
     private func report(_ down: Bool) {
+        let time = ProcessInfo.processInfo.systemUptime
         guard down != triggerDown else { return } // ignore repeats
         triggerDown = down
-        if isPaused { return }
-        DispatchQueue.main.async { self.onTrigger?(down) }
+        DispatchQueue.main.async {
+            if self.isPaused { return }
+            self.onTrigger?(down, time)
+        }
     }
 }
 
 /// Carbon global hot key (works in the sandbox, no permission). Reports press and release.
+/// Several can be registered: each reacts only to its own `id`.
 final class HotKey {
     struct Preset { let title: String; let keyCode: UInt32; let modifiers: UInt32 }
 
     var onPress: (() -> Void)?
     var onRelease: (() -> Void)?
+    private let id: UInt32
     private var ref: EventHotKeyRef?
     private var handler: EventHandlerRef?
 
-    init() {
+    init(id: UInt32) {
+        self.id = id
         var types = [
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
             EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
         ]
         InstallEventHandler(GetApplicationEventTarget(), { _, event, user in
             let me = Unmanaged<HotKey>.fromOpaque(user!).takeUnretainedValue()
+            var hit = EventHotKeyID()
+            GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                              MemoryLayout<EventHotKeyID>.size, nil, &hit)
+            guard hit.id == me.id else { return OSStatus(eventNotHandledErr) } // another HotKey's
             if GetEventKind(event) == UInt32(kEventHotKeyPressed) { me.onPress?() } else { me.onRelease?() }
             return noErr
         }, 2, &types, Unmanaged.passUnretained(self).toOpaque(), &handler)
@@ -139,7 +182,7 @@ final class HotKey {
 
     func register(_ preset: Preset) {
         unregister()
-        let id = EventHotKeyID(signature: OSType(0x5654_5950), id: 1) // "VTYP"
+        let id = EventHotKeyID(signature: OSType(0x5654_5950), id: self.id) // "VTYP"
         RegisterEventHotKey(preset.keyCode, preset.modifiers, id, GetApplicationEventTarget(), 0, &ref)
     }
 

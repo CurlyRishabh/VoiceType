@@ -40,10 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         flowBar.model.onCancel = { [weak self] in self?.send(.cancelButton) }
         flowBar.model.onOpen = { [weak self] in self?.showMainWindow() }
 
-        keys.onTrigger = { [weak self] down in
-            let now = ProcessInfo.processInfo.systemUptime
-            self?.send(down ? .keyDown(now) : .keyUp(now))
-        }
+        keys.onTrigger = { [weak self] down, time in self?.send(down ? .keyDown(time) : .keyUp(time)) }
+        keys.onHandsFreeKey = { [weak self] in self?.send(.handsFreeKey) }
         keys.onOtherKey = { [weak self] in self?.send(.otherKey) }
         keys.onEscape = { [weak self] in self?.send(.escape) }
 
@@ -51,6 +49,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dictation.onLevel = { [weak self] in self?.flowBar.model.push($0) }
         dictation.onMessage = { [weak self] m in self?.flowBar.notice(m, action: "Fix", onAction: { self?.showOnboarding() }) }
         dictation.onEndedByItself = { [weak self] in self?.gesture.reset(); self?.stopTimers() }
+        dictation.onBusy = { [weak self] in
+            // Taps while the last dictation is still being typed used to vanish silently.
+            self?.flowBar.notice("Still typing the last dictation", seconds: 1.5) {
+                self?.dictation.state == .idle ? .idle : .typing
+            }
+        }
         dictation.onResult = { [weak self] r, target in self?.deliver(r.text, appName: target.appName) }
 
         applyTrigger()
@@ -73,6 +77,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func send(_ event: TriggerGesture.Event) {
+        // A double-tap may be as slow as a double-click (System Settings → Mouse/Trackpad), within reason.
+        gesture.doubleTapWindow = min(max(NSEvent.doubleClickInterval, 0.35), 0.6)
         let effects = gesture.handle(event)
         effects.forEach(apply)
         scheduleDeadline()
@@ -108,9 +114,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         deadlineTimer?.invalidate()
         guard let deadline = gesture.nextDeadline else { return }
         let delay = max(0, deadline - ProcessInfo.processInfo.systemUptime) + 0.005
-        deadlineTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
-            self?.send(.tick(ProcessInfo.processInfo.systemUptime))
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            // Queued, so a key press already on its way to the main thread is handled first and a
+            // second tap that arrived in time is never mistaken for "no second tap".
+            DispatchQueue.main.async { self?.send(.tick(ProcessInfo.processInfo.systemUptime)) }
         }
+        RunLoop.main.add(timer, forMode: .common) // also while a menu is open
+        deadlineTimer = timer
     }
 
     private func stopTimers() {
@@ -158,7 +168,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(viewItem(languageView()))
         menu.addItem(.separator())
 
-        menu.addItem(item(dictation.isRecording ? "Finish dictation" : "Start hands-free", #selector(menuDictation)))
+        let handsFree = item(dictation.isRecording ? "Finish dictation" : "Start hands-free", #selector(menuDictation))
+        if KeyMonitor.handsFreeShortcutOn { // shown as a hint; the shortcut itself works everywhere
+            handsFree.keyEquivalent = " "
+            handsFree.keyEquivalentModifierMask = [.shift, .option]
+        }
+        menu.addItem(handsFree)
         menu.addItem(item(keys.isPaused ? "Resume \(TriggerKey.current.title)" : "Pause \(TriggerKey.current.title) for 1 hour", #selector(togglePause)))
         menu.addItem(.separator())
         menu.addItem(item("Open VoiceType…", #selector(openMain), key: ","))
@@ -172,7 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private static let menuWidth: CGFloat = 300
-    private static let languages = [("en", "English"), ("hi", "हिंदी"), ("auto", "Auto")]
+    private static let languages = [("en", "English"), ("hi", "हिंदी"), ("auto", "Both")]
 
     /// A menu row drawn by a view (AppKit controls keep working while the menu is open).
     private func viewItem(_ content: NSStackView) -> NSMenuItem {
@@ -326,8 +341,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
+    /// Opens setup at `step`; without one, after setup was finished, at the first thing still missing
+    /// ("Fix" and "Run setup again" land where they're needed).
     func showOnboarding(at step: OnboardingModel.Step? = nil) {
-        if let step { onboardingModel.step = step }
+        if let step {
+            onboardingModel.step = step
+        } else if UserDefaults.standard.bool(forKey: Key.onboardingDone) {
+            let needed: [OnboardingModel.Step] = [.microphone, .typing, .key, .models]
+            onboardingModel.step = needed.first { !$0.isDone(self) } ?? .languages
+        }
         if onboardingWindow == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 560),
                              styleMask: [.titled, .closable, .fullSizeContentView], backing: .buffered, defer: false)
@@ -369,6 +391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func finishOnboarding() {
         UserDefaults.standard.set(true, forKey: Key.onboardingDone)
+        onboardingModel.step = .languages
         onboardingWindow?.close()
         showMainWindow(.history)
     }
