@@ -3,31 +3,101 @@ import AVFoundation
 import SwiftUI
 import VoiceTypeCore
 
-/// Sidebar navigation + shared view state (ObservableObject instead of @State: the Command Line
-/// Tools toolchain has no SwiftUI macro plugin).
+/// Tabs + shared view state (ObservableObject instead of @State: the Command Line Tools toolchain
+/// has no SwiftUI macro plugin).
 final class MainModel: ObservableObject {
-    enum Section: String, CaseIterable, Identifiable {
-        case home, dictionary, styles, history, settings
-        var id: String { rawValue }
-        var title: String { rawValue.capitalized }
-        var icon: String {
+    enum Section: Int, CaseIterable, Identifiable {
+        case history, dictionary, styles
+        var id: Int { rawValue }
+        var title: String {
             switch self {
-            case .home: return "house"
-            case .dictionary: return "character.book.closed"
-            case .styles: return "pencil.and.outline"
-            case .history: return "clock"
-            case .settings: return "gearshape"
+            case .history: return "History"
+            case .dictionary: return "Dictionary"
+            case .styles: return "Styles"
             }
         }
     }
 
-    @Published var section: Section? = .home
+    @Published var section: Section = .history
     @Published var refresh = 0
     @Published var importReport = ""
     @Published var from = ""
     @Published var to = ""
     @Published var entries: [PersonalDictionary.Entry] = AppSettings.dictionary.entries
     @Published var historyQuery = ""
+    /// The Styles row whose example is shown.
+    @Published var styleExample: AppCategory = .messages
+    @Published var advancedOpen = false
+    @Published var confirmClearHistory = false
+    /// The History row under the pointer (its Copy button shows).
+    @Published var hoveredHistory: UUID?
+}
+
+/// The main window's toolbar: the three tabs in the middle, Settings on the right.
+final class MainToolbar: NSObject, NSToolbarDelegate {
+    private static let tabs = NSToolbarItem.Identifier("tabs")
+    private static let settings = NSToolbarItem.Identifier("settings")
+
+    private let model: MainModel
+    private let onSettings: () -> Void
+    private let segments: NSSegmentedControl
+
+    init(model: MainModel, onSettings: @escaping () -> Void) {
+        self.model = model
+        self.onSettings = onSettings
+        segments = NSSegmentedControl(labels: MainModel.Section.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
+        super.init()
+        segments.target = self
+        segments.action = #selector(pick)
+        segments.setAccessibilityLabel("Sections")
+        sync()
+    }
+
+    func attach(to window: NSWindow) {
+        let toolbar = NSToolbar(identifier: "VoiceTypeMain")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        toolbar.centeredItemIdentifiers = [Self.tabs]
+        window.toolbar = toolbar
+        window.toolbarStyle = .unified
+        window.titleVisibility = .hidden
+    }
+
+    /// Shows the model's tab as selected (after the tab was changed from code).
+    func sync() { segments.selectedSegment = model.section.rawValue }
+
+    @objc private func pick() {
+        if let s = MainModel.Section(rawValue: segments.selectedSegment) { model.section = s }
+    }
+
+    @objc private func openSettings() { onSettings() }
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [Self.tabs, .flexibleSpace, Self.settings]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarDefaultItemIdentifiers(toolbar)
+    }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        let item = NSToolbarItem(itemIdentifier: id)
+        switch id {
+        case Self.tabs:
+            item.label = "Sections"
+            item.view = segments
+        case Self.settings:
+            item.label = "Settings"
+            item.toolTip = "Settings"
+            item.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: "Settings")
+            item.isBordered = true
+            item.target = self
+            item.action = #selector(openSettings)
+        default:
+            return nil
+        }
+        return item
+    }
 }
 
 struct MainView: View {
@@ -35,313 +105,188 @@ struct MainView: View {
     @ObservedObject var model: MainModel
 
     var body: some View {
-        NavigationSplitView {
-            VStack(alignment: .leading, spacing: 0) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("VoiceType").font(.system(size: 17, weight: .bold))
-                    HStack(spacing: 6) {
-                        Circle().fill(Color.green).frame(width: 7, height: 7)
-                        Text("Offline · on this Mac").font(.system(size: 12, weight: .medium)).foregroundColor(.secondary)
-                    }
-                }
-                .padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 12)
-                List(MainModel.Section.allCases, selection: $model.section) { s in
-                    Label(s.title, systemImage: s.icon).tag(s)
-                }
-                .listStyle(.sidebar)
-                ModelCard(app: app)
-                    .padding(12)
-            }
-            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
-        } detail: {
+        VStack(spacing: 0) {
             Group {
-                switch model.section ?? .home {
-                case .home: HomeView(app: app, model: model, history: app.history)
-                case .dictionary: DictionaryView(model: model)
-                case .styles: StylesView(app: app)
+                switch model.section {
                 case .history: HistoryView(model: model, history: app.history)
-                case .settings: SettingsPane(app: app, model: model)
+                case .dictionary: DictionaryView(model: model)
+                case .styles: StylesView(app: app, model: model)
                 }
             }
-            .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            Divider()
+            StatusFooter(app: app, model: model)
         }
-        .frame(minWidth: 820, minHeight: 600)
+        .frame(minWidth: 640, minHeight: 480)
     }
 }
 
-private struct ModelCard: View {
-    let app: AppDelegate
-    var body: some View {
+/// The speech model in use, for the footer and Settings.
+enum SpeechModelInfo {
+    static func slot(_ app: AppDelegate) -> ModelSlot {
+        AppSettings.engineSpec(app.models).kind == .fastEnglish ? .moonshine : .whisper
+    }
+
+    static func name(_ app: AppDelegate) -> String {
         let spec = AppSettings.engineSpec(app.models)
-        let name: String = {
-            guard spec.kind == .hindiEnglish else { return "Moonshine Base" }
-            if let cpp = Recognizers.whisperCppModel(spec, modelsRoot: app.models.root) {
-                return "Whisper \(ModelLayout.whisperCppName(cpp)) · GPU"
-            }
-            let isTurbo = app.models.files(.whisper).contains { $0.lastPathComponent.hasPrefix("turbo") }
-            return isTurbo ? "Whisper turbo" : "Whisper small"
-        }()
-        let ready = app.models.isReady(spec.kind == .fastEnglish ? .moonshine : .whisper)
-        return VStack(alignment: .leading, spacing: 3) {
-            Text("Speech model").font(.caption).foregroundColor(.secondary)
-            Text(name).font(.system(size: 13, weight: .semibold))
-            Text(ready ? (spec.kind == .fastEnglish ? "English · ready" : "Hindi + English · ready") : "Not imported")
-                .font(.caption).foregroundColor(ready ? .secondary : .orange)
+        guard spec.kind == .hindiEnglish else { return "Moonshine Base" }
+        if let cpp = Recognizers.whisperCppModel(spec, modelsRoot: app.models.root) {
+            // "large-v3-turbo-q5_0" -> "large-v3-turbo": the quantisation suffix is noise here.
+            return "Whisper " + ModelLayout.whisperCppName(cpp).replacingOccurrences(of: "-q[0-9]+_[0-9a-z]+$", with: "", options: .regularExpression)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08)))
+        let isTurbo = app.models.files(.whisper).contains { $0.lastPathComponent.hasPrefix("turbo") }
+        return isTurbo ? "Whisper turbo" : "Whisper small"
+    }
+}
+
+/// One quiet line at the bottom of the window: what's running, or the one thing that needs fixing.
+private struct StatusFooter: View {
+    let app: AppDelegate
+    @ObservedObject var model: MainModel
+
+    var body: some View {
+        let _ = model.refresh
+        let problem = app.setupProblem
+        HStack(spacing: 8) {
+            Circle().fill(problem == nil ? Color.green : Color.orange).frame(width: 7, height: 7)
+                .accessibilityHidden(true)
+            Text(problem ?? "\(app.isPaused ? "Paused" : "Ready") · \(SpeechModelInfo.name(app)) · runs only on this Mac")
+                .font(.system(size: 12)).foregroundColor(.secondary).lineLimit(1)
+            Spacer(minLength: 8)
+            if problem != nil { Button("Fix") { app.showOnboarding() }.controlSize(.small) }
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 32)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refresh += 1 }
     }
 }
 
 // MARK: - Shared bits
-
-private struct Keycap: View {
-    let label: String
-    var body: some View {
-        Text(label).font(.system(size: 13, weight: .semibold))
-            .padding(.horizontal, 8).frame(minWidth: 34, minHeight: 30)
-            .background(RoundedRectangle(cornerRadius: 7).fill(Color(nsColor: .controlBackgroundColor)))
-            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.primary.opacity(0.18)))
-    }
-}
-
-private struct Chip: View {
-    let text: String
-    var accent = false
-    var body: some View {
-        Text(text).font(.system(size: 11, weight: .medium))
-            .padding(.horizontal, 8).padding(.vertical, 2)
-            .background(Capsule().fill(accent ? Color.accentColor.opacity(0.15) : Color.primary.opacity(0.07)))
-            .foregroundColor(accent ? .accentColor : .primary)
-    }
-}
-
-private func pageHeader(_ title: String, _ subtitle: String? = nil) -> some View {
-    VStack(alignment: .leading, spacing: 6) {
-        Text(title).font(.system(size: 24, weight: .bold))
-        if let subtitle { Text(subtitle).font(.system(size: 14)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true) }
-    }
-}
 
 private func copy(_ text: String) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(text, forType: .string)
 }
 
-// MARK: - Home
+private var triggerName: String {
+    switch TriggerKey.current {
+    case .fn: return "fn"
+    case .rightOption: return "right ⌥"
+    case .optionSpace: return "⌥ Space"
+    }
+}
 
-private struct HomeView: View {
-    let app: AppDelegate
+// MARK: - History
+
+private struct HistoryView: View {
     @ObservedObject var model: MainModel
     @ObservedObject var history: HistoryStore
-    @AppStorage(Key.language) var language = "en"
+
+    private struct Day: Identifiable {
+        let id: Date
+        var items: [HistoryStore.Item]
+
+        var title: String {
+            let cal = Calendar.current
+            if cal.isDateInToday(id) { return "Today" }
+            if cal.isDateInYesterday(id) { return "Yesterday" }
+            return id.formatted(.dateTime.weekday(.wide).day().month(.wide))
+        }
+    }
+
+    /// Newest first, grouped by calendar day.
+    private func days(_ items: [HistoryStore.Item]) -> [Day] {
+        var out: [Day] = []
+        for item in items {
+            let day = Calendar.current.startOfDay(for: item.date)
+            if out.last?.id == day { out[out.count - 1].items.append(item) } else { out.append(Day(id: day, items: [item])) }
+        }
+        return out
+    }
 
     var body: some View {
-        let trigger = TriggerKey.current
-        let key = trigger == .optionSpace ? "⌥ Space" : (trigger == .fn ? "fn" : "right ⌥")
-        let stats = UsageStats.lastSevenDays(history.items.map { .init(date: $0.date, text: $0.text, audioMillis: $0.audioMillis) })
-        return ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                HStack {
-                    Text(greeting).font(.system(size: 24, weight: .bold))
-                    Spacer()
-                    Picker("Language", selection: $language) {
-                        Text("English").tag("en"); Text("हिंदी").tag("hi"); Text("Auto").tag("auto")
-                    }
-                    .pickerStyle(.segmented).labelsHidden().frame(width: 240)
-                }
-                if let problem = app.setupProblem {
-                    HStack(spacing: 12) {
-                        Image(systemName: "exclamationmark.circle.fill").foregroundColor(.orange)
-                        Text(problem).font(.system(size: 13))
-                        Spacer()
-                        Button("Fix") { app.showOnboarding() }
-                    }
-                    .padding(12).background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.12)))
-                }
-                HStack(spacing: 12) {
-                    shortcut(Keycap(label: key), "Hold to talk", "Release to type it")
-                    shortcut(Keycap(label: "\(key) \(key)"), "Hands-free", "Tap \(key) again to finish")
-                    shortcut(Keycap(label: "esc"), "Cancel", "Nothing is typed")
-                }
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Last 7 days").font(.system(size: 15, weight: .semibold))
-                    HStack(spacing: 12) {
-                        stat("\(stats.words.formatted())", "words dictated")
-                        stat(stats.wordsPerMinute == 0 ? "–" : "\(stats.wordsPerMinute) wpm", "your speaking speed")
-                        stat("\(stats.minutesSaved) min", "saved vs typing at 45 wpm")
-                    }
-                }
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text("Recent").font(.system(size: 15, weight: .semibold))
-                        Spacer()
-                        Button("All history") { model.section = .history }.buttonStyle(.link)
-                    }
+        let q = model.historyQuery.lowercased()
+        let items = q.isEmpty ? history.items : history.items.filter { $0.text.lowercased().contains(q) || $0.raw.lowercased().contains(q) }
+        return VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundColor(.secondary).accessibilityHidden(true)
+                TextField("Search what you said", text: $model.historyQuery).textFieldStyle(.plain).font(.system(size: 13))
+            }
+            .padding(.horizontal, 10).frame(height: 32)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
+            .padding(.horizontal, 24).padding(.top, 16).padding(.bottom, 8)
+
+            if items.isEmpty {
+                VStack(spacing: 6) {
+                    Text(history.items.isEmpty ? "Nothing yet" : "No matches").font(.system(size: 15, weight: .semibold))
                     if history.items.isEmpty {
-                        Text("Nothing yet. Hold \(key) anywhere and start talking.")
-                            .foregroundColor(.secondary).padding(.vertical, 8)
-                    } else {
-                        VStack(spacing: 0) {
-                            ForEach(Array(history.items.prefix(5))) { item in
-                                HistoryRow(item: item)
-                                if item.id != history.items.prefix(5).last?.id { Divider() }
+                        Text("Hold \(triggerName) anywhere and start talking. Double-tap it for hands-free; esc cancels.")
+                            .font(.system(size: 13)).foregroundColor(.secondary).multilineTextAlignment(.center)
+                    }
+                }
+                .padding(32)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(days(items)) { day in
+                            Text(day.title).font(.system(size: 12, weight: .semibold)).foregroundColor(.secondary)
+                                .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4)
+                                .accessibilityAddTraits(.isHeader)
+                            ForEach(day.items) { item in
+                                HistoryRow(item: item, hovering: model.hoveredHistory == item.id,
+                                           onHover: { inside in
+                                               if inside { model.hoveredHistory = item.id } else if model.hoveredHistory == item.id { model.hoveredHistory = nil }
+                                           },
+                                           onDelete: { history.delete(item) })
                             }
                         }
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.1)))
                     }
+                    .padding(.horizontal, 12).padding(.bottom, 12)
                 }
             }
-            .padding(28)
         }
-    }
-
-    private var greeting: String {
-        let h = Calendar.current.component(.hour, from: Date())
-        return h < 12 ? "Good morning" : (h < 17 ? "Good afternoon" : "Good evening")
-    }
-
-    private func shortcut(_ cap: Keycap, _ title: String, _ detail: String) -> some View {
-        HStack(spacing: 12) {
-            cap
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 14, weight: .semibold))
-                Text(detail).font(.system(size: 12)).foregroundColor(.secondary)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity)
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.1)))
-    }
-
-    private func stat(_ value: String, _ label: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value).font(.system(size: 24, weight: .bold).monospacedDigit())
-            Text(label).font(.system(size: 13)).foregroundColor(.secondary)
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.04)))
     }
 }
 
 private struct HistoryRow: View {
     let item: HistoryStore.Item
+    let hovering: Bool
+    let onHover: (Bool) -> Void
+    let onDelete: () -> Void
+
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            Text(time).font(.system(size: 12).monospacedDigit()).foregroundColor(.secondary).frame(width: 72, alignment: .leading)
-            VStack(alignment: .leading, spacing: 5) {
+        HStack(alignment: .top, spacing: 12) {
+            Text(item.date.formatted(date: .omitted, time: .shortened))
+                .font(.system(size: 12).monospacedDigit()).foregroundColor(.secondary)
+                .frame(width: 64, alignment: .leading).padding(.top, 2)
+            VStack(alignment: .leading, spacing: 3) {
                 Text(item.text).font(.system(size: 14)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 6) {
-                    if let app = item.app { Chip(text: app) }
-                    if let style = item.style { Chip(text: style, accent: true) }
-                    if item.handsFree == true, let ms = item.audioMillis { Chip(text: String(format: "Hands-free · %d:%02d", ms / 60000, ms / 1000 % 60)) }
-                    if item.raw != item.text { Text("heard: \(item.raw)").font(.system(size: 11)).foregroundColor(.secondary).lineLimit(1) }
-                }
+                if !meta.isEmpty { Text(meta).font(.system(size: 12)).foregroundColor(.secondary) }
             }
             Spacer(minLength: 0)
+            // Always laid out, so rows don't jump when the pointer moves over them.
+            Button("Copy") { copy(item.text) }.controlSize(.small).opacity(hovering ? 1 : 0)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(hovering ? Color.primary.opacity(0.06) : Color.clear))
+        .contentShape(Rectangle())
+        .onHover(perform: onHover)
+        .contextMenu {
             Button("Copy") { copy(item.text) }
-        }
-        .padding(.horizontal, 16).padding(.vertical, 12)
-    }
-
-    private var time: String {
-        Calendar.current.isDateInToday(item.date)
-            ? item.date.formatted(date: .omitted, time: .shortened)
-            : (Calendar.current.isDateInYesterday(item.date) ? "Yesterday" : item.date.formatted(.dateTime.day().month()))
-    }
-}
-
-// MARK: - Styles
-
-private struct StylesView: View {
-    let app: AppDelegate
-    @AppStorage(Key.polish) var polish = true
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                HStack(alignment: .top) {
-                    pageHeader("Styles", "VoiceType looks at the app you are typing in and picks how to tidy your words. Polishing runs on Apple’s on-device model; if it takes longer than 3 seconds, the instant rules are used instead.")
-                    Spacer()
-                    Toggle("AI polish", isOn: $polish).toggleStyle(.switch)
-                }
-                if !app.polisher.isReady {
-                    Label(app.polisher.statusText, systemImage: "info.circle").font(.system(size: 13)).foregroundColor(.secondary)
-                }
-                HStack(alignment: .top, spacing: 14) {
-                    StyleCard(category: .messages, said: "um so yeah i’ll be there at like 5 no wait 6", typed: "So yeah, I’ll be there at 6.")
-                    StyleCard(category: .email, said: "hey priya thanks for this i looked at it uh two comments on pricing can we close by friday",
-                              typed: "Hi Priya, thanks for this. I’ve left two comments on the pricing section. Could we close it by Friday?")
-                    StyleCard(category: .notes, said: "ship the android build then import turbo on the mac and test hands free in slack",
-                              typed: "- Ship the Android build\n- Import Whisper turbo on the Mac\n- Test hands-free mode in Slack")
-                }
-                .disabled(!polish)
-                .opacity(polish ? 1 : 0.5)
-                OtherAppsRow()
-            }
-            .padding(28)
+            if item.raw != item.text { Button("Copy what was heard") { copy(item.raw) } }
+            Divider()
+            Button("Delete", role: .destructive, action: onDelete)
         }
     }
-}
 
-private struct StyleCard: View {
-    let category: AppCategory
-    let said: String
-    let typed: String
-    @AppStorage var choice: String
-
-    init(category: AppCategory, said: String, typed: String) {
-        self.category = category
-        self.said = said
-        self.typed = typed
-        _choice = AppStorage(wrappedValue: AppStyleMap.defaultChoice(category).rawValue, Key.style(category))
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(category.title).font(.system(size: 15, weight: .semibold))
-                Text(category.examples).font(.system(size: 12)).foregroundColor(.secondary)
-            }
-            Picker(category.title, selection: $choice) {
-                ForEach(StyleChoice.allCases, id: \.rawValue) { Text($0.title).tag($0.rawValue) }
-            }
-            .pickerStyle(.segmented).labelsHidden()
-            Text("YOU SAID").font(.system(size: 11, weight: .semibold)).foregroundColor(.secondary)
-            Text(said).font(.system(size: 13)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
-            Text("VOICETYPE TYPED").font(.system(size: 11, weight: .semibold)).foregroundColor(.secondary)
-            Text(choice == StyleChoice.off.rawValue ? "Instant rules only." : typed)
-                .font(.system(size: 14)).fixedSize(horizontal: false, vertical: true)
-                .padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)))
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.1)))
-    }
-}
-
-private struct OtherAppsRow: View {
-    @AppStorage(Key.style(.other)) var choice = StyleChoice.off.rawValue
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(AppCategory.other.title).font(.system(size: 14, weight: .semibold))
-                Text("\(AppCategory.other.examples). Off = instant rules only: fillers, corrections, punctuation, your dictionary.")
-                    .font(.system(size: 13)).foregroundColor(.secondary)
-            }
-            Spacer()
-            Picker("Every other app", selection: $choice) {
-                ForEach(StyleChoice.allCases, id: \.rawValue) { Text($0.title).tag($0.rawValue) }
-            }
-            .pickerStyle(.segmented).labelsHidden().frame(width: 280)
-        }
-        .padding(14)
-        .background(RoundedRectangle(cornerRadius: 12).fill(Color.primary.opacity(0.04)))
+    /// "Slack · Casual · hands-free 0:42"
+    private var meta: String {
+        var parts: [String] = []
+        if let app = item.app { parts.append(app) }
+        if let style = item.style { parts.append(style) }
+        if item.handsFree == true, let ms = item.audioMillis { parts.append(String(format: "hands-free %d:%02d", ms / 60000, ms / 1000 % 60)) }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -351,11 +296,12 @@ private struct DictionaryView: View {
     @ObservedObject var model: MainModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            pageHeader("Dictionary", "Names and words VoiceType should always spell your way. Applied last, even after AI polish.")
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Names and words VoiceType should always spell your way. Applied last, even after AI polish.")
+                .font(.system(size: 13)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
-                TextField("When I say (e.g. acme)", text: $model.from)
-                TextField("Write (e.g. Acme)", text: $model.to)
+                TextField("When I say (e.g. acme)", text: $model.from).textFieldStyle(.roundedBorder)
+                TextField("Write (e.g. Acme)", text: $model.to).textFieldStyle(.roundedBorder)
                 Button("Add") {
                     guard !model.from.isEmpty, !model.to.isEmpty else { return }
                     save(AppSettings.dictionary.plus(.init(model.from, model.to)))
@@ -364,57 +310,156 @@ private struct DictionaryView: View {
                 .keyboardShortcut(.defaultAction)
             }
             if model.entries.isEmpty {
-                Text("No words yet.").foregroundColor(.secondary)
-            }
-            List {
-                ForEach(model.entries, id: \.self) { e in
-                    HStack {
-                        Text(e.from)
-                        Image(systemName: "arrow.right").foregroundColor(.secondary)
-                        Text(e.to).bold()
-                        Spacer()
-                        Button(role: .destructive) { save(AppSettings.dictionary.minus(e.from)) } label: { Image(systemName: "trash") }
-                            .buttonStyle(.borderless).accessibilityLabel("Delete \(e.from)")
+                Text("No words yet.").font(.system(size: 13)).foregroundColor(.secondary)
+                Spacer(minLength: 0)
+            } else {
+                List {
+                    ForEach(model.entries, id: \.self) { e in
+                        HStack {
+                            Text(e.from)
+                            Image(systemName: "arrow.right").foregroundColor(.secondary).accessibilityHidden(true)
+                            Text(e.to).bold()
+                            Spacer()
+                            Button(role: .destructive) { save(AppSettings.dictionary.minus(e.from)) } label: { Image(systemName: "trash") }
+                                .buttonStyle(.borderless).accessibilityLabel("Delete \(e.from)")
+                        }
                     }
                 }
+                .listStyle(.inset)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.1)))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
             }
         }
-        .padding(28)
+        .padding(.horizontal, 24).padding(.vertical, 20)
     }
 
     private func save(_ d: PersonalDictionary) { AppSettings.dictionary = d; model.entries = d.entries }
 }
 
-// MARK: - History
+// MARK: - Styles
 
-private struct HistoryView: View {
-    @ObservedObject var model: MainModel
-    @ObservedObject var history: HistoryStore
+private struct StyleExample {
+    let said: String
+    let typed: String
 
-    var body: some View {
-        let q = model.historyQuery.lowercased()
-        let items = q.isEmpty ? history.items : history.items.filter { $0.text.lowercased().contains(q) || $0.raw.lowercased().contains(q) }
-        return VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top) {
-                pageHeader("History", "Stored only on this Mac.")
-                Spacer()
-                Button("Clear all", role: .destructive) { history.clearAll() }
-            }
-            TextField("Search", text: $model.historyQuery).textFieldStyle(.roundedBorder)
-            List(items) { item in
-                HistoryRow(item: item)
-                    .contextMenu { Button("Delete") { history.delete(item) } }
-            }
+    private static let casualSaid = "um so yeah i’ll be there at like 5 no wait 6"
+
+    static func of(_ choice: StyleChoice) -> StyleExample {
+        switch choice {
+        case .casual:
+            return .init(said: casualSaid, typed: "So yeah, I’ll be there at 6.")
+        case .formal:
+            return .init(said: "hey priya thanks for this i looked at it uh two comments on pricing can we close by friday",
+                         typed: "Hi Priya, thanks for this. I’ve left two comments on the pricing section. Could we close it by Friday?")
+        case .notes:
+            return .init(said: "ship the android build then import turbo on the mac and test hands free in slack",
+                         typed: "- Ship the Android build\n- Import Whisper turbo on the Mac\n- Test hands-free mode in Slack")
+        case .off:
+            // Run through the real instant rules, so this is exactly what would be typed.
+            let said = "um so i think uh we should meet at 5 no wait 6"
+            return .init(said: said, typed: RuleCleaner().clean(said))
         }
-        .padding(28)
     }
 }
 
-// MARK: - Settings
-
-private struct SettingsPane: View {
+private struct StylesView: View {
     let app: AppDelegate
     @ObservedObject var model: MainModel
+    @AppStorage(Key.polish) var polish = true
+    @AppStorage(Key.style(.messages)) var messages = StyleChoice.casual.rawValue
+    @AppStorage(Key.style(.email)) var email = StyleChoice.formal.rawValue
+    @AppStorage(Key.style(.notes)) var notes = StyleChoice.notes.rawValue
+    @AppStorage(Key.style(.other)) var other = StyleChoice.off.rawValue
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                HStack(alignment: .center, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("AI polish").font(.system(size: 15, weight: .semibold))
+                        Text("Tidies your words to suit the app you are typing in. Runs on Apple’s on-device model.")
+                            .font(.system(size: 13)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 0)
+                    Toggle("AI polish", isOn: $polish).toggleStyle(.switch).labelsHidden()
+                }
+                if !app.polisher.isReady {
+                    Label(app.polisher.statusText, systemImage: "info.circle").font(.system(size: 13)).foregroundColor(.secondary)
+                }
+                VStack(spacing: 0) {
+                    ForEach(AppCategory.allCases, id: \.self) { c in
+                        if c != AppCategory.allCases.first { Divider() }
+                        row(c)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.1)))
+                .disabled(!polish)
+                .opacity(polish ? 1 : 0.5)
+                example
+            }
+            .padding(.horizontal, 24).padding(.vertical, 20)
+        }
+    }
+
+    private func stored(_ c: AppCategory) -> Binding<String> {
+        switch c {
+        case .messages: return $messages
+        case .email: return $email
+        case .notes: return $notes
+        case .other: return $other
+        }
+    }
+
+    private func row(_ c: AppCategory) -> some View {
+        let base = stored(c)
+        // Changing a row's style also shows that row's example.
+        let choice = Binding<String>(get: { base.wrappedValue }, set: { base.wrappedValue = $0; model.styleExample = c })
+        return HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(c.title).font(.system(size: 13, weight: .semibold))
+                Text(c.examples).font(.system(size: 12)).foregroundColor(.secondary)
+            }
+            Spacer(minLength: 0)
+            Picker(c.title, selection: choice) {
+                ForEach(StyleChoice.allCases, id: \.rawValue) { Text($0.title).tag($0.rawValue) }
+            }
+            .pickerStyle(.segmented).labelsHidden().fixedSize()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(model.styleExample == c ? Color.primary.opacity(0.06) : Color.clear)
+        .contentShape(Rectangle())
+        .onTapGesture { model.styleExample = c }
+    }
+
+    private var example: some View {
+        let c = model.styleExample
+        let choice = polish ? (StyleChoice(rawValue: stored(c).wrappedValue) ?? .off) : .off
+        let ex = StyleExample.of(choice)
+        return HStack(alignment: .top, spacing: 12) {
+            exampleCard("You say", ex.said, strong: false)
+            exampleCard("\(c.title) · \(choice == .off ? "rules only" : choice.title) types", ex.typed, strong: true)
+        }
+    }
+
+    private func exampleCard(_ title: String, _ text: String, strong: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.system(size: 11, weight: .semibold)).foregroundColor(.secondary)
+            Text(text).font(.system(size: 13, weight: strong ? .medium : .regular))
+                .foregroundColor(strong ? .primary : .secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.04)))
+    }
+}
+
+// MARK: - Settings (its own window)
+
+struct SettingsPane: View {
+    let app: AppDelegate
+    @ObservedObject var model: MainModel
+    @ObservedObject var history: HistoryStore
     @AppStorage(Key.trigger) var trigger = TriggerKey.fn.rawValue
     @AppStorage(Key.language) var language = "en"
     @AppStorage(Key.englishEngine) var engine = EngineKind.hindiEnglish.rawValue
@@ -424,116 +469,192 @@ private struct SettingsPane: View {
     @AppStorage(Key.commands) var commands = true
     @AppStorage(Key.capitalize) var capitalize = true
     @AppStorage(Key.finalPunct) var finalPunct = true
-    @AppStorage(Key.flowBarIdle) var flowBarIdle = true
+    @AppStorage(Key.flowBarIdle) var flowBarIdle = false
     @AppStorage(Key.history) var historyOn = true
     @AppStorage(Key.keepRecordings) var keepRecordings = false
 
+    private struct Issue: Identifiable {
+        let id: String
+        let button: String
+        let action: () -> Void
+    }
+
+    /// Only what still needs doing; an empty list collapses to one "all set" row.
+    private var issues: [Issue] {
+        var out: [Issue] = []
+        if AVCaptureDevice.authorizationStatus(for: .audio) != .authorized {
+            out.append(Issue(id: "Microphone", button: "Allow…") {
+                AVCaptureDevice.requestAccess(for: .audio) { _ in DispatchQueue.main.async { model.refresh += 1 } }
+                openPrivacy("Privacy_Microphone")
+            })
+        }
+        if !Inserter.isTrusted {
+            out.append(Issue(id: "Accessibility (auto-paste)", button: "Allow…") {
+                Inserter.requestTrust(); openPrivacy("Privacy_Accessibility")
+            })
+        }
+        if trigger != TriggerKey.optionSpace.rawValue, !KeyMonitor.hasInputMonitoring {
+            out.append(Issue(id: "Input Monitoring (\(TriggerKey.current.title) key)", button: "Allow…") {
+                KeyMonitor.requestInputMonitoring(); openPrivacy("Privacy_ListenEvent")
+            })
+        }
+        if trigger == TriggerKey.fn.rawValue, FnKeySetting.isDoNothing == false {
+            out.append(Issue(id: "Set “Press fn key to” to Do Nothing", button: "Open Keyboard Settings") {
+                FnKeySetting.openKeyboardSettings()
+            })
+        }
+        return out
+    }
+
     var body: some View {
         let _ = model.refresh
+        let issues = self.issues
+        let slot = SpeechModelInfo.slot(app)
+        let modelReady = app.models.isReady(slot)
         Form {
-            Section("Dictation key") {
-                Picker("Key", selection: $trigger) {
+            Section("Dictation") {
+                Picker("Dictation key", selection: $trigger) {
                     ForEach(TriggerKey.allCases, id: \.rawValue) { Text($0.title).tag($0.rawValue) }
                 }
-                Text("Hold to talk · double-tap for hands-free · esc cancels.").font(.caption).foregroundColor(.secondary)
-                Toggle("Show the flow bar when idle", isOn: $flowBarIdle)
-            }
-            Section("Permissions") {
-                permission("Microphone", AVCaptureDevice.authorizationStatus(for: .audio) == .authorized) {
-                    AVCaptureDevice.requestAccess(for: .audio) { _ in DispatchQueue.main.async { model.refresh += 1 } }
-                    openPrivacy("Privacy_Microphone")
-                }
-                permission("Accessibility (auto-paste)", Inserter.isTrusted) {
-                    Inserter.requestTrust(); openPrivacy("Privacy_Accessibility")
-                }
-                if trigger != TriggerKey.optionSpace.rawValue {
-                    permission("Input Monitoring (\(TriggerKey.current.title) key)", KeyMonitor.hasInputMonitoring) {
-                        KeyMonitor.requestInputMonitoring(); openPrivacy("Privacy_ListenEvent")
+                LabeledContent("Language") {
+                    Picker("Language", selection: $language) {
+                        Text("English").tag("en"); Text("हिंदी").tag("hi"); Text("Auto").tag("auto")
                     }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
                 }
-                if trigger == TriggerKey.fn.rawValue {
+                LabeledContent("Hindi is written in") {
+                    Picker("Hindi is written in", selection: $script) {
+                        Text("Latin").tag("latin"); Text("देवनागरी").tag("devanagari")
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                }
+            }
+            Section("Setup") {
+                if issues.isEmpty {
                     HStack {
-                        Text("“Press fn key to” is set to Do Nothing")
+                        Image(systemName: "checkmark.circle.fill").foregroundColor(.green).accessibilityHidden(true)
+                        Text("Permissions are all set")
                         Spacer()
-                        switch FnKeySetting.isDoNothing {
-                        case .some(true): Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
-                        case .some(false): Button("Open Keyboard Settings") { FnKeySetting.openKeyboardSettings() }
-                        case .none: Button("Check in Keyboard Settings") { FnKeySetting.openKeyboardSettings() }
+                        Button("Run setup again") { app.showOnboarding() }
+                    }
+                } else {
+                    ForEach(issues) { issue in
+                        HStack {
+                            Image(systemName: "exclamationmark.circle.fill").foregroundColor(.orange).accessibilityHidden(true)
+                            Text(issue.id)
+                            Spacer()
+                            Button(issue.button, action: issue.action)
                         }
                     }
-                }
-                Button("Run setup again") { app.showOnboarding() }
-            }
-            Section("Speech recognition") {
-                Picker("English engine", selection: $engine) {
-                    Text("Whisper (best accuracy, uses your Dictionary)").tag(EngineKind.hindiEnglish.rawValue)
-                    Text("Fast English (Moonshine, needs its own model)").tag(EngineKind.fastEnglish.rawValue)
-                }.disabled(language != "en")
-                Picker("Hindi output script", selection: $script) {
-                    Text("Latin (Hinglish: “kal meeting hai”)").tag("latin"); Text("Devanagari (“कल मीटिंग है”)").tag("devanagari")
-                }
-            }
-            Section("Clean-up rules (instant)") {
-                Toggle("Remove filler words (um, uh, like, you know, matlab, haan toh)", isOn: $fillers)
-                Toggle("Apply self-corrections (“5 no wait 6”, “I mean”, “nahi nahi”)", isOn: $corrections)
-                Toggle("Spoken commands (new line, new paragraph, comma, full stop, question mark)", isOn: $commands)
-                Toggle("Auto-capitalise", isOn: $capitalize)
-                Toggle("Add final punctuation", isOn: $finalPunct)
-            }
-            Section("Models (copied into the app; VoiceType itself never goes online)") {
-                ForEach(ModelSlot.allCases, id: \.self) { slot in
-                    HStack {
-                        Image(systemName: app.models.isReady(slot) ? "checkmark.circle.fill" : "circle")
-                            .foregroundColor(app.models.isReady(slot) ? .green : .secondary)
-                        Text(slot.title)
-                        Spacer()
-                        Text(slot == .vad && app.models.isVADBuiltIn ? "built in" :
-                                (app.models.isReady(slot) ? ByteCountFormatter.string(fromByteCount: app.models.size(slot), countStyle: .file) : "missing"))
-                            .foregroundColor(.secondary)
-                    }
+                    Button("Run setup again") { app.showOnboarding() }
                 }
                 HStack {
-                    Button("Download speech model (\(KnownModels.recommended.sizeText))") { app.downloadModel() }
-                    Button("Import model…") { app.importModels { model.importReport = $0; model.refresh += 1 } }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Speech model")
+                        Text(modelReady ? "\(SpeechModelInfo.name(app)) · \(ByteCountFormatter.string(fromByteCount: app.models.size(slot), countStyle: .file))" : "Not imported")
+                            .font(.caption).foregroundColor(modelReady ? .secondary : .orange)
+                    }
+                    Spacer()
+                    Menu(modelReady ? "Change…" : "Add…") {
+                        Button("Download speech model (\(KnownModels.recommended.sizeText))") { app.downloadModel() }
+                        Button("Import model…") { app.importModels { model.importReport = $0; model.refresh += 1 } }
+                    }
+                    .fixedSize()
                 }
                 if !model.importReport.isEmpty { Text(model.importReport).font(.caption).textSelection(.enabled) }
             }
-            Section("Privacy") {
-                Toggle("Save transcript history (on this Mac only)", isOn: $historyOn)
-                Toggle("Keep recordings (debug, off by default)", isOn: $keepRecordings)
-                Text("Network: blocked by the App Sandbox. VoiceType has no network entitlement.").font(.caption).foregroundColor(.secondary)
+            Section {
+                Toggle("Save history on this Mac", isOn: $historyOn)
+                HStack {
+                    Text("Saved dictations")
+                    Spacer()
+                    Button("Clear history…", role: .destructive) { model.confirmClearHistory = true }
+                        .disabled(history.items.isEmpty)
+                }
+            } header: {
+                Text("Privacy")
+            } footer: {
+                Text("VoiceType has no network access. macOS enforces this, not the app.")
+                    .font(.caption).foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 10)
             }
-            Section("About") {
+            Section {
+                Button { model.advancedOpen.toggle() } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Advanced")
+                            Text("Clean-up rules, flow bar when idle, recordings, performance log")
+                                .font(.caption).foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundColor(.secondary)
+                            .rotationEffect(.degrees(model.advancedOpen ? 90 : 0)).accessibilityHidden(true)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityValue(model.advancedOpen ? "expanded" : "collapsed")
+            }
+            if model.advancedOpen { advanced }
+            Section {
                 HStack {
                     Text("VoiceType \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev")")
+                        .foregroundColor(.secondary)
                     Spacer()
                     Button("Open-source licences") { app.showLicenses() }
                 }
-                Text("Speech recognition by sherpa-onnx and ONNX Runtime. Models you import (Moonshine, Whisper, Silero VAD) are MIT-licensed.")
-                    .font(.caption).foregroundColor(.secondary)
-            }
-            Section("Performance") {
-                Text("Loaded: \(app.speech.loadedSpec.map { "\($0.kind.rawValue) \($0.language.isEmpty ? "auto" : $0.language)" } ?? "none") · \(EngineSpec(kind: .fastEnglish, language: "en").threads) threads · AI polish: \(app.polisher.statusText)")
-                    .font(.caption)
-                ForEach(PerfLog.shared.recent.prefix(8)) { e in
-                    Text("\(e.date.formatted(date: .omitted, time: .standard))  \(e.engine)  audio \(e.audioMillis) ms  decode \(e.decodeMillis) ms  RTF \(String(format: "%.3f", e.rtf))\(e.polishMillis >= 0 ? "  polish \(e.polishMillis) ms" : "")\(e.polishNote.map { "  [\($0)]" } ?? "")")
-                        .font(.system(.caption, design: .monospaced))
-                }
-                Button("Refresh") { model.refresh += 1 }
             }
         }
         .formStyle(.grouped)
-        .onChange(of: trigger) { _ in app.applyTrigger() }
+        .frame(minWidth: 480, minHeight: 420)
+        .confirmationDialog("Delete all saved dictations?", isPresented: $model.confirmClearHistory) {
+            Button("Delete all", role: .destructive) { history.clearAll() }
+        } message: {
+            Text("This can’t be undone.")
+        }
+        .onChange(of: trigger) { _ in app.applyTrigger(); model.refresh += 1 }
+        .onChange(of: language) { _ in app.dictation.warmUp(); model.refresh += 1 }
+        .onChange(of: engine) { _ in model.refresh += 1 }
         .onChange(of: flowBarIdle) { _ in app.flowBar.refreshIdleVisibility() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refresh += 1 }
     }
 
-    private func permission(_ title: String, _ ok: Bool, action: @escaping () -> Void) -> some View {
-        HStack {
-            Image(systemName: ok ? "checkmark.circle.fill" : "exclamationmark.circle").foregroundColor(ok ? .green : .orange)
-            Text(title)
-            Spacer()
-            if !ok { Button("Allow…", action: action) }
+    @ViewBuilder private var advanced: some View {
+        Section("Clean-up rules (instant)") {
+            Toggle("Remove filler words (um, uh, like, you know, matlab, haan toh)", isOn: $fillers)
+            Toggle("Apply self-corrections (“5 no wait 6”, “I mean”, “nahi nahi”)", isOn: $corrections)
+            Toggle("Spoken commands (new line, new paragraph, comma, full stop, question mark)", isOn: $commands)
+            Toggle("Auto-capitalise", isOn: $capitalize)
+            Toggle("Add final punctuation", isOn: $finalPunct)
+        }
+        Section("Flow bar and engine") {
+            Toggle("Show the flow bar when idle", isOn: $flowBarIdle)
+            Picker("English engine", selection: $engine) {
+                Text("Whisper (best accuracy, uses your Dictionary)").tag(EngineKind.hindiEnglish.rawValue)
+                Text("Fast English (Moonshine, needs its own model)").tag(EngineKind.fastEnglish.rawValue)
+            }
+            .disabled(language != "en")
+            ForEach(ModelSlot.allCases, id: \.self) { slot in
+                HStack {
+                    Image(systemName: app.models.isReady(slot) ? "checkmark.circle.fill" : "circle")
+                        .foregroundColor(app.models.isReady(slot) ? .green : .secondary).accessibilityHidden(true)
+                    Text(slot.title)
+                    Spacer()
+                    Text(slot == .vad && app.models.isVADBuiltIn ? "built in" :
+                            (app.models.isReady(slot) ? ByteCountFormatter.string(fromByteCount: app.models.size(slot), countStyle: .file) : "missing"))
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        Section("Debug") {
+            Toggle("Keep recordings", isOn: $keepRecordings)
+            Text("Loaded: \(app.speech.loadedSpec.map { "\($0.kind.rawValue) \($0.language.isEmpty ? "auto" : $0.language)" } ?? "none") · \(EngineSpec(kind: .fastEnglish, language: "en").threads) threads · AI polish: \(app.polisher.statusText)")
+                .font(.caption)
+            ForEach(PerfLog.shared.recent.prefix(8)) { e in
+                Text("\(e.date.formatted(date: .omitted, time: .standard))  \(e.engine)  audio \(e.audioMillis) ms  decode \(e.decodeMillis) ms  RTF \(String(format: "%.3f", e.rtf))\(e.polishMillis >= 0 ? "  polish \(e.polishMillis) ms" : "")\(e.polishNote.map { "  [\($0)]" } ?? "")")
+                    .font(.system(.caption, design: .monospaced))
+            }
+            Button("Refresh performance log") { model.refresh += 1 }
         }
     }
 }

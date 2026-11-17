@@ -39,16 +39,18 @@ engine for English and Hindi.
 | **esc** (or ✕) | Cancels; nothing is typed. |
 | **fn + another key** | Works as normal (fn+arrows, F-keys); dictation ignores it. |
 
-* The **flow bar** at the bottom of the screen shows what's happening: a small sliver when idle
-  (click it to open VoiceType), level bars while you talk, a lock and timer in hands-free mode,
-  "Typing…", or a one-line notice with a **Fix** button.
+* The **flow bar** at the bottom of the screen appears only while you dictate: level bars while you
+  talk, a timer with ✕ and ■ in hands-free mode, "Typing…", or a one-line notice with a **Fix**
+  button. (Want a small sliver there when idle too? Settings → Advanced → *Show the flow bar when idle*.)
+* The **VoiceType window** (menu bar → *Open VoiceType…*) has three tabs: **History** (search and
+  re-copy what you said), **Dictionary** and **Styles**. The gear button opens **Settings**.
 * Long hands-free dictations are transcribed sentence by sentence while you talk, so the text is
   ready almost as soon as you stop (limit: 15 minutes; holding: 5 minutes).
 * **Styles** pick the AI-polish tone from the app you're typing in: Messages/Slack/WhatsApp →
   Casual, Mail/Outlook → Formal, Notes/Obsidian/Notion → bullet Notes, everything else → instant
   rules only. Change any of them in VoiceType → Styles.
-* The **menu bar** icon has the last dictation (**Paste again** / Copy), language, the style for the
-  current app, "Start hands-free dictation", and "Pause fn for 1 hour".
+* The **menu bar** icon has the last dictation (**Paste again** / Copy), the language switch,
+  "Start hands-free", and "Pause fn for 1 hour".
 * No fn key (most external keyboards)? Settings → Dictation key → **Right ⌥**, or **⌥ Space**
   (⌥ Space needs no Input Monitoring permission).
 

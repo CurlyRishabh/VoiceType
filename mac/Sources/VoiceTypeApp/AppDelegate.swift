@@ -18,7 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
     private let mainModel = MainModel()
     private let onboardingModel = OnboardingModel()
+    private lazy var mainToolbar = MainToolbar(model: mainModel) { [weak self] in self?.showSettings() }
     private var mainWindow: NSWindow?
+    private var settingsWindow: NSWindow?
     private var onboardingWindow: NSWindow?
     private var licensesWindow: NSWindow?
     private var lastText: String?
@@ -143,47 +145,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
-        let status = NSMenuItem(title: setupProblem ?? (keys.isPaused ? "Paused · offline" : "Ready · offline"), action: nil, keyEquivalent: "")
-        status.isEnabled = false
-        menu.addItem(status)
-        menu.addItem(.separator())
-
-        if let lastText {
-            let header = NSMenuItem(title: "Last dictation\(lastApp.map { " · \($0)" } ?? "")", action: nil, keyEquivalent: "")
-            header.isEnabled = false
-            menu.addItem(header)
-            let preview = NSMenuItem(title: lastText.count > 60 ? String(lastText.prefix(60)) + "…" : lastText, action: nil, keyEquivalent: "")
-            preview.isEnabled = false
-            menu.addItem(preview)
-            menu.addItem(item("Paste again", #selector(pasteAgain)))
-            menu.addItem(item("Copy", #selector(copyLast)))
+        // Nothing to say when all is well; only the one thing that needs fixing.
+        if let problem = setupProblem {
+            menu.addItem(item("\(problem). Fix…", #selector(openSetup)))
             menu.addItem(.separator())
         }
 
-        let lang = NSMenuItem(title: "Language", action: nil, keyEquivalent: "")
-        let sub = NSMenu()
-        let current = UserDefaults.standard.string(forKey: Key.language) ?? "en"
-        for (code, title) in [("en", "English"), ("hi", "हिंदी"), ("auto", "Auto (Hindi + English)")] {
-            let i = item(title, #selector(setLanguage(_:)))
-            i.representedObject = code
-            i.state = code == current ? .on : .off
-            sub.addItem(i)
+        if let lastText {
+            menu.addItem(viewItem(lastDictationView(lastText)))
+            menu.addItem(.separator())
         }
-        lang.submenu = sub
-        menu.addItem(lang)
-
-        let front = NSWorkspace.shared.frontmostApplication
-        let category = AppStyleMap.category(bundleID: front?.bundleIdentifier)
-        let style = NSMenuItem(title: "Style in \(front?.localizedName ?? "this app"): \(AppSettings.styleChoice(category).title)", action: nil, keyEquivalent: "")
-        style.isEnabled = false
-        menu.addItem(style)
+        menu.addItem(viewItem(languageView()))
         menu.addItem(.separator())
 
-        menu.addItem(item(dictation.isRecording ? "Finish dictation" : "Start hands-free dictation", #selector(menuDictation)))
-        menu.addItem(item("Open VoiceType", #selector(openMain), key: ","))
+        menu.addItem(item(dictation.isRecording ? "Finish dictation" : "Start hands-free", #selector(menuDictation)))
         menu.addItem(item(keys.isPaused ? "Resume \(TriggerKey.current.title)" : "Pause \(TriggerKey.current.title) for 1 hour", #selector(togglePause)))
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Quit VoiceType", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        menu.addItem(item("Open VoiceType…", #selector(openMain), key: ","))
+        menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 
     private func item(_ title: String, _ action: Selector, key: String = "") -> NSMenuItem {
@@ -192,22 +171,92 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return i
     }
 
+    private static let menuWidth: CGFloat = 300
+    private static let languages = [("en", "English"), ("hi", "हिंदी"), ("auto", "Auto")]
+
+    /// A menu row drawn by a view (AppKit controls keep working while the menu is open).
+    private func viewItem(_ content: NSStackView) -> NSMenuItem {
+        content.translatesAutoresizingMaskIntoConstraints = false
+        content.widthAnchor.constraint(equalToConstant: Self.menuWidth).isActive = true
+        let container = NSView(frame: NSRect(origin: .zero, size: NSSize(width: Self.menuWidth, height: content.fittingSize.height)))
+        container.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            content.topAnchor.constraint(equalTo: container.topAnchor),
+        ])
+        let i = NSMenuItem()
+        i.view = container
+        return i
+    }
+
+    /// "Last dictation · Slack", the text (two lines at most), and Paste again / Copy.
+    private func lastDictationView(_ text: String) -> NSStackView {
+        let meta = NSTextField(labelWithString: "Last dictation\(lastApp.map { " · \($0)" } ?? "")")
+        meta.font = .systemFont(ofSize: 11, weight: .medium)
+        meta.textColor = .secondaryLabelColor
+        let body = NSTextField(wrappingLabelWithString: text)
+        body.font = .menuFont(ofSize: 0)
+        body.maximumNumberOfLines = 2
+        body.cell?.truncatesLastVisibleLine = true
+        body.preferredMaxLayoutWidth = Self.menuWidth - 28
+        body.isSelectable = false
+        let buttons = NSStackView(views: [menuButton("Paste again", #selector(pasteAgain)), menuButton("Copy", #selector(copyLast))])
+        buttons.spacing = 6
+        let stack = NSStackView(views: [meta, body, buttons])
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 5
+        stack.edgeInsets = NSEdgeInsets(top: 6, left: 14, bottom: 8, right: 14)
+        return stack
+    }
+
+    private func menuButton(_ title: String, _ action: Selector) -> NSButton {
+        let b = NSButton(title: title, target: self, action: action)
+        b.bezelStyle = .rounded
+        b.controlSize = .small
+        b.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        return b
+    }
+
+    /// "Language" with the three choices one click away.
+    private func languageView() -> NSStackView {
+        let label = NSTextField(labelWithString: "Language")
+        label.font = .menuFont(ofSize: 0)
+        let picker = NSSegmentedControl(labels: Self.languages.map(\.1), trackingMode: .selectOne, target: self, action: #selector(languagePicked(_:)))
+        picker.controlSize = .small
+        picker.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        picker.setAccessibilityLabel("Language")
+        let current = UserDefaults.standard.string(forKey: Key.language) ?? "en"
+        picker.selectedSegment = Self.languages.firstIndex { $0.0 == current } ?? 0
+        let stack = NSStackView()
+        stack.orientation = .horizontal
+        stack.addView(label, in: .leading)
+        stack.addView(picker, in: .trailing)
+        stack.edgeInsets = NSEdgeInsets(top: 4, left: 14, bottom: 4, right: 14)
+        return stack
+    }
+
     @objc private func pasteAgain() {
+        statusItem.menu?.cancelTracking()
         guard let lastText else { return }
         // Let the menu close and focus return to the app first.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.deliver(lastText, appName: self.lastApp) }
     }
 
     @objc private func copyLast() {
+        statusItem.menu?.cancelTracking()
         guard let lastText else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(lastText, forType: .string)
     }
 
-    @objc private func setLanguage(_ sender: NSMenuItem) {
-        UserDefaults.standard.set(sender.representedObject as? String, forKey: Key.language)
+    @objc private func languagePicked(_ sender: NSSegmentedControl) {
+        guard Self.languages.indices.contains(sender.selectedSegment) else { return }
+        UserDefaults.standard.set(Self.languages[sender.selectedSegment].0, forKey: Key.language)
         dictation.warmUp()
     }
+
+    @objc private func openSetup() { showOnboarding() }
 
     @objc private func menuDictation() {
         if dictation.isRecording { send(.stopButton) } else { gesture.startHandsFree().forEach(apply) }
@@ -237,22 +286,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return nil
     }
 
+    var isPaused: Bool { keys.isPaused }
+
+    /// History, Dictionary and Styles, with the tabs in the toolbar.
     func showMainWindow(_ section: MainModel.Section? = nil) {
         if let section { mainModel.section = section }
         if mainWindow == nil {
-            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1040, height: 720),
-                             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 620),
+                             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
             w.title = "VoiceType"
-            w.titlebarAppearsTransparent = true
             w.contentViewController = NSHostingController(rootView: MainView(app: self, model: mainModel))
+            w.setContentSize(NSSize(width: 760, height: 620))
+            mainToolbar.attach(to: w)
             w.isReleasedWhenClosed = false
-            w.setFrameAutosaveName("VoiceTypeMain")
             w.center()
+            w.setFrameAutosaveName("VoiceTypeMainV2") // V2: the redesigned, smaller window
             mainWindow = w
         }
+        mainToolbar.sync()
         mainModel.refresh += 1
         NSApp.activate(ignoringOtherApps: true)
         mainWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    func showSettings() {
+        if settingsWindow == nil {
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 620),
+                             styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+            w.title = "Settings"
+            w.contentViewController = NSHostingController(rootView: SettingsPane(app: self, model: mainModel, history: history))
+            w.setContentSize(NSSize(width: 560, height: 620))
+            w.isReleasedWhenClosed = false
+            w.center()
+            w.setFrameAutosaveName("VoiceTypeSettings")
+            settingsWindow = w
+        }
+        mainModel.refresh += 1
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
     func showOnboarding(at step: OnboardingModel.Step? = nil) {
@@ -299,7 +370,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func finishOnboarding() {
         UserDefaults.standard.set(true, forKey: Key.onboardingDone)
         onboardingWindow?.close()
-        showMainWindow(.home)
+        showMainWindow(.history)
     }
 
     /// Opens the speech model's download in the user's browser. VoiceType itself has no network

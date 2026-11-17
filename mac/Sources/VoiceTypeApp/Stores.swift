@@ -17,7 +17,7 @@ enum Key {
     static let dictionary = "dictionary"
     static let showHUD = "show_hud"
     static let trigger = "trigger"              // fn | right_option | option_space
-    static let flowBarIdle = "flow_bar_idle"    // show the idle sliver
+    static let flowBarIdle = "flow_bar_idle"    // show the idle sliver (off unless turned on in Advanced)
     static let onboardingDone = "onboarding_done"
     static func style(_ c: AppCategory) -> String { "style_\(c.rawValue)" }
 }
@@ -31,7 +31,7 @@ enum AppSettings {
             Key.silenceMs: 1500, Key.fillers: true, Key.corrections: true, Key.commands: true,
             Key.capitalize: true, Key.finalPunct: true, Key.polish: true, Key.polishStyle: "casual",
             Key.hotkey: 0, Key.history: true, Key.keepRecordings: false, Key.showHUD: true,
-            Key.trigger: "fn", Key.flowBarIdle: true, Key.onboardingDone: false,
+            Key.trigger: "fn", Key.flowBarIdle: false, Key.onboardingDone: false,
             Key.style(.messages): StyleChoice.casual.rawValue, Key.style(.email): StyleChoice.formal.rawValue,
             Key.style(.notes): StyleChoice.notes.rawValue, Key.style(.other): StyleChoice.off.rawValue,
         ])

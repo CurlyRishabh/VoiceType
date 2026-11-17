@@ -74,7 +74,7 @@ final class FlowBar {
         switch phase {
         case .idle: return NSSize(width: 64, height: 20)
         case .listening: return NSSize(width: 132, height: 44)
-        case .handsFree: return NSSize(width: 230, height: 44)
+        case .handsFree: return NSSize(width: 210, height: 44)
         case .typing: return NSSize(width: 124, height: 44)
         case .notice:
             let text = (model.notice as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: .medium)]).width
@@ -168,8 +168,7 @@ struct FlowBarView: View {
 
     private var handsFree: some View {
         shell {
-            Image(systemName: "lock.fill").font(.system(size: 11, weight: .bold)).foregroundColor(.white)
-                .accessibilityLabel("Hands-free")
+            // No lock icon: the running timer and the stop button already say "hands-free".
             bars
             Text(String(format: "%d:%02d", model.elapsed / 60, model.elapsed % 60))
                 .font(.system(size: 13, weight: .semibold).monospacedDigit()).foregroundColor(.white)
