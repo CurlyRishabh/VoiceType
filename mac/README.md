@@ -17,7 +17,9 @@ Needs an Apple-silicon Mac (M1 or newer) on macOS 15+.
    **System Settings → Privacy & Security → Open Anyway**.
 3. **The Setup window** walks you through the rest:
    * **Languages**: tick the ones you dictate in: English, हिंदी (Hindi), or both for Hinglish.
-     With Hindi you also pick Latin ("kal meeting hai") or Devanagari ("कल मीटिंग है") output.
+     With Hindi you also pick Latin ("kal meeting hai") or Devanagari ("कल मीटिंग है") output, or
+     turn on **Translate to English** (Settings, or the menu bar) to have Hindi and Hinglish typed
+     as English ("there is a meeting tomorrow"). English is always typed as English.
    * **Microphone**: click *Allow microphone* and choose **Allow** in the macOS dialog.
    * **Accessibility (auto-paste)** and **Input Monitoring** (for the fn key): click *Allow*. macOS
      adds VoiceType to the list in Privacy & Security and offers to open it; just **switch VoiceType
@@ -137,10 +139,20 @@ scripts/build-dmg.sh      # fetches sherpa-onnx + whisper.cpp (checksum-verified
 open build/VoiceType.dmg
 ```
 
-Self-test on a WAV file (unsandboxed dev binary):
+Test the speech stack on real audio (any wav, m4a, mp3 or flac; uses the app's models folder,
+or `MODELS=/path`):
+```bash
+scripts/test-audio.sh                    # built-in pass/fail checks on clips spoken by macOS voices
+scripts/test-audio.sh clip.m4a other.wav # what each clip types in every language / translate mode
+```
+With "Keep recordings" on, the app saves every dictation to
+`~/Library/Containers/dev.offline.voicetype.mac/Data/Library/Application Support/VoiceType/recordings`,
+so a dictation that came out wrong can be replayed with `scripts/test-audio.sh` directly.
+
+One clip, one mode (unsandboxed dev binary):
 ```bash
 DYLD_LIBRARY_PATH=vendor/sherpa-onnx/lib "$(swift build -c release --arch arm64 --show-bin-path)/VoiceType" \
-  --selftest ../models some.wav hi whisper
+  --selftest ../models some.wav hi whisper            # add --translate and/or --devanagari
 # test the vocabulary prompt (whisper.cpp only):
 VOICETYPE_PROMPT="Cassie QC agent, ChargeBee" DYLD_LIBRARY_PATH=vendor/sherpa-onnx/lib ... --selftest ../models some.wav en whisper
 ```

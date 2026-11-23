@@ -102,4 +102,18 @@ public enum LanguageSelection {
         let known = languages.intersection(codes)
         return known.count > 1 ? "auto" : known.first
     }
+
+    /// "Both": the language to decode a chunk in, from Whisper's language scores. Left to itself
+    /// Whisper picks among ~100 languages (a short Hinglish clip came out Korean) and, when
+    /// Hinglish tips to English, translates it. So only Hindi and English compete, Urdu counts as
+    /// Hindi (same speech, and the usual wrong guess), and English has to win clearly.
+    public static func decodeLanguage(probability: (String) -> Float) -> String {
+        probability("en") >= englishMargin * (probability("hi") + probability("ur")) ? "en" : "hi"
+    }
+
+    /// Measured on 608 chunks of one user's dictation, VAD-trimmed as the app hears them: Hindi
+    /// scored English at up to 29.5x Hindi, short English phrases down to 8.7x, most English over 50x.
+    /// The two overlap; 30 misroutes the fewest (4 short English phrases, against 6 Hindi clips at 8).
+    /// Every LibriSpeech English chunk scores over 1,000x.
+    static let englishMargin: Float = 30
 }

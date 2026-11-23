@@ -99,7 +99,7 @@ final class SherpaRecognizer: SpeechRecognizing {
             config.model_config.whisper.encoder = s(enc)
             config.model_config.whisper.decoder = s(dec)
             config.model_config.whisper.language = s(spec.language) // "" = auto-detect
-            config.model_config.whisper.task = s("transcribe")       // never "translate"
+            config.model_config.whisper.task = s("transcribe")       // translation = decoding as "en"; see AppSettings.engineSpec
             config.model_config.whisper.tail_paddings = -1 // sherpa default; see WhisperBudget for the real fix
         }
         guard let r = SherpaOnnxCreateOfflineRecognizer(&config) else {

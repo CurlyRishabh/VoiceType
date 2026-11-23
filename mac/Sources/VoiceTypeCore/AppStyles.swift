@@ -99,7 +99,70 @@ public struct UsageStats: Equatable, Sendable {
         public let date: Date
         public let text: String
         public let audioMillis: Int?
-        public init(date: Date, text: String, audioMillis: Int?) { self.date = date; self.text = text; self.audioMillis = audioMillis }
+        public let app: String?
+        public init(date: Date, text: String, audioMillis: Int?, app: String? = nil) {
+            self.date = date; self.text = text; self.audioMillis = audioMillis; self.app = app
+        }
+    }
+
+    public struct DayWords: Equatable, Sendable { public let day: Date; public let words: Int }
+    public struct AppShare: Equatable, Sendable { public let app: String; public let percent: Int }
+
+    /// Words per calendar day for the 7 days ending today, oldest first; empty days are 0.
+    public static func wordsPerDay(_ entries: [Entry], now: Date = Date(), calendar: Calendar = .current) -> [DayWords] {
+        let today = calendar.startOfDay(for: now)
+        var words: [Date: Int] = [:]
+        for e in entries where e.date <= now { words[calendar.startOfDay(for: e.date), default: 0] += wordCount(e.text) }
+        return (0..<7).reversed().map {
+            let day = calendar.date(byAdding: .day, value: -$0, to: today)!
+            return DayWords(day: day, words: words[day] ?? 0)
+        }
+    }
+
+    public struct Bests: Equatable, Sendable {
+        public let bestDay: DayWords?
+        public let longestWords: Int
+        public let fastestWPM: Int
+    }
+
+    /// All-time records. Pace only counts dictations of 10+ words and 3+ seconds, so a quick "yes" can't set it.
+    public static func bests(_ entries: [Entry], calendar: Calendar = .current) -> Bests {
+        var perDay: [Date: Int] = [:]
+        var longest = 0, fastest = 0
+        for e in entries {
+            let words = wordCount(e.text)
+            perDay[calendar.startOfDay(for: e.date), default: 0] += words
+            longest = max(longest, words)
+            if let ms = e.audioMillis, ms >= 3000, words >= 10 {
+                fastest = max(fastest, Int((Double(words) / (Double(ms) / 60_000)).rounded()))
+            }
+        }
+        let best = perDay.max { $0.value != $1.value ? $0.value < $1.value : $0.key < $1.key }
+        return Bests(bestDay: best.map { DayWords(day: $0.key, words: $0.value) }, longestWords: longest, fastestWPM: fastest)
+    }
+
+    /// Days in a row with a dictation, ending today, or yesterday when today has none yet.
+    public static func streak(_ entries: [Entry], now: Date = Date(), calendar: Calendar = .current) -> Int {
+        let days = Set(entries.filter { $0.date <= now }.map { calendar.startOfDay(for: $0.date) })
+        var day = calendar.startOfDay(for: now)
+        if !days.contains(day) { day = calendar.date(byAdding: .day, value: -1, to: day)! }
+        var count = 0
+        while days.contains(day) { count += 1; day = calendar.date(byAdding: .day, value: -1, to: day)! }
+        return count
+    }
+
+    /// The apps that got the most dictated words in the last 7 days, with their share of words, biggest first.
+    public static func topApps(_ entries: [Entry], now: Date = Date(), limit: Int = 3) -> [AppShare] {
+        let since = now.addingTimeInterval(-7 * 24 * 3600)
+        var words: [String: Int] = [:]
+        for e in entries where e.date >= since && e.date <= now {
+            if let app = e.app, !app.isEmpty { words[app, default: 0] += wordCount(e.text) }
+        }
+        let total = words.values.reduce(0, +)
+        guard total > 0 else { return [] }
+        return words.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+            .prefix(limit)
+            .map { AppShare(app: $0.key, percent: Int((Double($0.value) * 100 / Double(total)).rounded())) }
     }
 
     public static func lastSevenDays(_ entries: [Entry], now: Date = Date()) -> UsageStats {

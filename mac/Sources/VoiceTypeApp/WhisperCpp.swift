@@ -28,7 +28,7 @@ final class WhisperCppRecognizer: SpeechRecognizing {
         guard !samples.isEmpty else { return "" }
         var p = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
         p.n_threads = Int32(spec.threads)
-        p.translate = false          // never translate: Hindi stays Hindi
+        p.translate = false          // large-v3-turbo ignores Whisper's translate task; see AppSettings.engineSpec
         p.no_context = true          // each chunk stands alone, like the sherpa path
         p.print_progress = false
         p.print_realtime = false
@@ -36,16 +36,18 @@ final class WhisperCppRecognizer: SpeechRecognizing {
         p.print_special = false
         p.suppress_blank = true
         p.suppress_nst = true        // drop "[Music]"-style non-speech tokens
-        let language = spec.language.isEmpty ? "auto" : spec.language
         let prompt = (prompt?.isEmpty ?? true) ? nil : prompt
 
-        let status: Int32 = language.withCString { lang in
-            Self.withOptionalCString(prompt) { promptPtr in
-                p.language = lang
-                p.initial_prompt = promptPtr
-                return samples.withUnsafeBufferPointer { whisper_full(ctx, p, $0.baseAddress, Int32($0.count)) }
+        func decode(_ language: String) -> Int32 {
+            language.withCString { lang in
+                Self.withOptionalCString(prompt) { promptPtr in
+                    p.language = lang
+                    p.initial_prompt = promptPtr
+                    return samples.withUnsafeBufferPointer { whisper_full(ctx, p, $0.baseAddress, Int32($0.count)) }
+                }
             }
         }
+        let status = decode(spec.language.isEmpty ? detectLanguage(samples) : spec.language)
         guard status == 0 else {
             NSLog("VoiceType: whisper.cpp decode failed (%d)", status)
             return ""
@@ -56,6 +58,17 @@ final class WhisperCppRecognizer: SpeechRecognizing {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         if let prompt, WhisperPrompt.isEcho(text, prompt: prompt) { return "" }
         return text
+    }
+
+    /// "Both": score the languages ourselves and let LanguageSelection choose between Hindi and
+    /// English, instead of Whisper's own pick among ~100. Same cost as its auto-detect: one encoder pass.
+    private func detectLanguage(_ samples: [Float]) -> String {
+        var probs = [Float](repeating: 0, count: Int(whisper_lang_max_id()) + 1)
+        let threads = Int32(spec.threads)
+        let ok = samples.withUnsafeBufferPointer { whisper_pcm_to_mel(ctx, $0.baseAddress, Int32($0.count), threads) } == 0
+            && whisper_lang_auto_detect(ctx, 0, threads, &probs) >= 0
+        guard ok else { return "auto" } // could not score: leave it to Whisper, as before
+        return LanguageSelection.decodeLanguage { probs[Int(whisper_lang_id($0))] }
     }
 
     deinit { whisper_free(ctx) }

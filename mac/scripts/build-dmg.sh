@@ -50,10 +50,14 @@ for s in 16 32 128 256 512; do
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
 
-echo "==> signing (ad-hoc) with sandbox entitlements"
-codesign --force --sign - "$APP/Contents/Frameworks/"*.dylib
-codesign --force --sign - "$APP/Contents/Frameworks/whisper.framework"
-codesign --force --sign - --entitlements Resources/VoiceType.entitlements "$APP"
+# A stable identity keeps macOS permissions (mic, Accessibility, Input Monitoring) across rebuilds;
+# ad-hoc ("-") changes identity every build, so macOS asks again. Override: SIGN_ID="Name" scripts/build-dmg.sh
+SIGN_ID="${SIGN_ID:-VoiceType Local}"
+security find-identity -p codesigning | grep -qF "\"$SIGN_ID\"" || SIGN_ID="-"
+echo "==> signing ($([[ $SIGN_ID == "-" ]] && echo "ad-hoc: permissions reset on every build" || echo "$SIGN_ID")) with sandbox entitlements"
+codesign --force --sign "$SIGN_ID" "$APP/Contents/Frameworks/"*.dylib
+codesign --force --sign "$SIGN_ID" "$APP/Contents/Frameworks/whisper.framework"
+codesign --force --sign "$SIGN_ID" --entitlements Resources/VoiceType.entitlements "$APP"
 codesign --verify --deep --strict "$APP"
 
 echo "==> privacy check"

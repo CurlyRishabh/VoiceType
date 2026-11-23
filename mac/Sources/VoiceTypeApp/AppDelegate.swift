@@ -166,6 +166,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(.separator())
         }
         menu.addItem(viewItem(languageView()))
+        if UserDefaults.standard.string(forKey: Key.language) != "en" {
+            let t = item("Translate to English", #selector(toggleTranslate))
+            t.state = UserDefaults.standard.bool(forKey: Key.translate) ? .on : .off
+            menu.addItem(t)
+        }
         menu.addItem(.separator())
 
         let handsFree = item(dictation.isRecording ? "Finish dictation" : "Start hands-free", #selector(menuDictation))
@@ -271,6 +276,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dictation.warmUp()
     }
 
+    @objc private func toggleTranslate() {
+        UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: Key.translate), forKey: Key.translate)
+        dictation.warmUp()
+    }
+
     @objc private func openSetup() { showOnboarding() }
 
     @objc private func menuDictation() {
@@ -279,7 +289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openMain() { showMainWindow() }
 
-    @objc private func togglePause() {
+    @objc func togglePause() {
         keys.pausedUntil = keys.isPaused ? nil : Date().addingTimeInterval(3600)
     }
 
@@ -303,7 +313,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     var isPaused: Bool { keys.isPaused }
 
-    /// History, Dictionary and Styles, with the tabs in the toolbar.
+    /// Home, History, Dictionary and Styles, with the tabs in the toolbar.
     func showMainWindow(_ section: MainModel.Section? = nil) {
         if let section { mainModel.section = section }
         if mainWindow == nil {

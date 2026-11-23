@@ -252,6 +252,12 @@ struct LanguageSelectionTests {
     @Test func bothIsAutoDetect() { #expect(LanguageSelection.setting(for: ["hi", "en"]) == "auto") }
     @Test func nothingPickedIsRefused() { #expect(LanguageSelection.setting(for: []) == nil) }
     @Test func unknownCodesAreIgnored() { #expect(LanguageSelection.setting(for: ["fr", "hi"]) == "hi") }
+    private func decodeLanguage(_ p: [String: Float]) -> String { LanguageSelection.decodeLanguage { p[$0] ?? 0 } }
+    @Test func clearEnglishStaysEnglish() { #expect(decodeLanguage(["en": 0.93, "hi": 0.017]) == "en") }
+    @Test func hinglishLeaningEnglishIsHindi() { #expect(decodeLanguage(["en": 0.74, "hi": 0.16, "ur": 0.03]) == "hi") }
+    @Test func hindiScoredFairlyEnglishIsStillHindi() { #expect(decodeLanguage(["en": 0.59, "hi": 0.02]) == "hi") }
+    @Test func urduCountsAsHindi() { #expect(decodeLanguage(["ur": 0.88, "hi": 0.07, "en": 0.02]) == "hi") }
+    @Test func otherLanguagesAreIgnored() { #expect(decodeLanguage(["pl": 0.44, "en": 0.3, "hi": 0.006]) == "en") }
     @Test func unsetMeansEnglish() { #expect(LanguageSelection.languages(for: nil) == ["en"]) }
 }
 

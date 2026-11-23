@@ -185,6 +185,43 @@ struct AppStyleTests {
         #expect(s.wordsPerMinute == 120)  // but only timed ones towards speed (not 1120)
     }
 
+    @Test func dashboardStats() {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        let now = Date(timeIntervalSince1970: 1_000_000)  // day 11, ~13:46 UTC
+        let day: TimeInterval = 24 * 3600
+        let entries = [
+            UsageStats.Entry(date: now.addingTimeInterval(-60), text: "one two three", audioMillis: nil, app: "Slack"),
+            UsageStats.Entry(date: now.addingTimeInterval(-day), text: "four", audioMillis: nil, app: "Mail"),
+            UsageStats.Entry(date: now.addingTimeInterval(-2 * day), text: "five six", audioMillis: nil, app: "Slack"),
+            UsageStats.Entry(date: now.addingTimeInterval(-4 * day), text: "gap day", audioMillis: nil),
+        ]
+        let perDay = UsageStats.wordsPerDay(entries, now: now, calendar: cal)
+        #expect(perDay.map(\.words) == [0, 0, 2, 0, 2, 1, 3])
+        #expect(perDay.last?.day == cal.startOfDay(for: now))
+        #expect(UsageStats.streak(entries, now: now, calendar: cal) == 3)
+        // Nothing today yet: the streak still counts back from yesterday.
+        #expect(UsageStats.streak(Array(entries.dropFirst()), now: now, calendar: cal) == 2)
+        #expect(UsageStats.streak([], now: now, calendar: cal) == 0)
+        #expect(UsageStats.topApps(entries, now: now) == [.init(app: "Slack", percent: 83), .init(app: "Mail", percent: 17)])
+    }
+
+    @Test func personalBests() {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let ten = Array(repeating: "word", count: 10).joined(separator: " ")
+        let b = UsageStats.bests([
+            UsageStats.Entry(date: now, text: ten, audioMillis: 4000),               // 150 wpm
+            UsageStats.Entry(date: now.addingTimeInterval(-60), text: "yes", audioMillis: 200), // too short to count for pace
+            UsageStats.Entry(date: now.addingTimeInterval(-86_400), text: ten + " " + ten, audioMillis: nil),
+        ], calendar: cal)
+        #expect(b.fastestWPM == 150)
+        #expect(b.longestWords == 20)
+        #expect(b.bestDay == .init(day: cal.startOfDay(for: now.addingTimeInterval(-86_400)), words: 20))
+        #expect(UsageStats.bests([]).bestDay == nil)
+    }
+
     @Test func statsWithNothingTimed() {
         let s = UsageStats.lastSevenDays([UsageStats.Entry(date: Date(), text: "hello there", audioMillis: nil)])
         #expect(s.words == 2 && s.wordsPerMinute == 0 && s.minutesSaved == 0)

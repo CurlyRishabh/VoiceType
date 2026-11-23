@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import Charts
 import SwiftUI
 import VoiceTypeCore
 
@@ -7,10 +8,11 @@ import VoiceTypeCore
 /// has no SwiftUI macro plugin).
 final class MainModel: ObservableObject {
     enum Section: Int, CaseIterable, Identifiable {
-        case history, dictionary, styles
+        case home, history, dictionary, styles
         var id: Int { rawValue }
         var title: String {
             switch self {
+            case .home: return "Home"
             case .history: return "History"
             case .dictionary: return "Dictionary"
             case .styles: return "Styles"
@@ -18,7 +20,7 @@ final class MainModel: ObservableObject {
         }
     }
 
-    @Published var section: Section = .history
+    @Published var section: Section = .home
     @Published var refresh = 0
     @Published var importReport = ""
     @Published var from = ""
@@ -33,7 +35,7 @@ final class MainModel: ObservableObject {
     @Published var hoveredHistory: UUID?
 }
 
-/// The main window's toolbar: the three tabs in the middle, Settings on the right.
+/// The main window's toolbar: the four tabs in the middle, Settings on the right.
 final class MainToolbar: NSObject, NSToolbarDelegate {
     private static let tabs = NSToolbarItem.Identifier("tabs")
     private static let settings = NSToolbarItem.Identifier("settings")
@@ -50,6 +52,7 @@ final class MainToolbar: NSObject, NSToolbarDelegate {
         segments.target = self
         segments.action = #selector(pick)
         segments.setAccessibilityLabel("Sections")
+        segments.selectedSegmentBezelColor = Mist.accentNS
         sync()
     }
 
@@ -108,16 +111,216 @@ struct MainView: View {
         VStack(spacing: 0) {
             Group {
                 switch model.section {
+                case .home: HomeView(app: app, model: model, history: app.history)
                 case .history: HistoryView(model: model, history: app.history)
                 case .dictionary: DictionaryView(model: model)
                 case .styles: StylesView(app: app, model: model)
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // Cap the readable width and centre it, so full screen doesn't stretch rows and tiles edge to edge.
+            .frame(maxWidth: 980, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxWidth: .infinity)
             Divider()
-            StatusFooter(app: app, model: model)
+            StatusFooter(app: app, model: model).background(Mist.bar)
         }
         .frame(minWidth: 640, minHeight: 480)
+        .background(Mist.window)
+        .tint(Mist.accent)
+    }
+}
+
+/// The "Mist" palette: lavender-gray in light mode, charcoal-violet in dark.
+enum Mist {
+    private static func pair(_ light: UInt32, _ dark: UInt32) -> NSColor {
+        func rgb(_ v: UInt32) -> NSColor {
+            NSColor(srgbRed: CGFloat(v >> 16 & 0xFF) / 255, green: CGFloat(v >> 8 & 0xFF) / 255, blue: CGFloat(v & 0xFF) / 255, alpha: 1)
+        }
+        return NSColor(name: nil) { $0.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? rgb(dark) : rgb(light) }
+    }
+    static let accentNS = pair(0x6E5DB8, 0xB4A6F0)
+    static let accent = Color(nsColor: accentNS)
+    static let window = Color(nsColor: pair(0xF6F5FA, 0x1C1A23))
+    static let bar = Color(nsColor: pair(0xEEECF4, 0x221F2B))
+    static let card = Color(nsColor: pair(0xFFFFFF, 0x24212E))
+    static let tile = Color(nsColor: pair(0xF1EEFA, 0x2C2839))
+    static let border = Color(nsColor: pair(0xDEDBE7, 0x353042))
+}
+
+/// The Home tab: status, this week's numbers, your last few dictations, and all-time bests.
+private struct HomeView: View {
+    let app: AppDelegate
+    @ObservedObject var model: MainModel
+    @ObservedObject var history: HistoryStore
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                StatusCard(app: app, model: model)
+                Dashboard(history: history)
+                if !history.items.isEmpty {
+                    HStack {
+                        Text("Recent").font(.system(size: 13, weight: .semibold)).accessibilityAddTraits(.isHeader)
+                        Spacer()
+                        Button("See all") { app.showMainWindow(.history) }.buttonStyle(.link)
+                    }
+                    VStack(spacing: 0) {
+                        ForEach(history.items.prefix(3)) { item in
+                            HistoryRow(item: item, hovering: model.hoveredHistory == item.id,
+                                       onHover: { inside in
+                                           if inside { model.hoveredHistory = item.id } else if model.hoveredHistory == item.id { model.hoveredHistory = nil }
+                                       },
+                                       onDelete: { history.delete(item) })
+                        }
+                    }
+                    .padding(4)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Mist.card))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Mist.border))
+                    bests
+                }
+            }
+            .padding(24)
+        }
+    }
+
+    private var bests: some View {
+        let b = UsageStats.bests(history.items.map { .init(date: $0.date, text: $0.text, audioMillis: $0.audioMillis) })
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("Personal bests").font(.system(size: 13, weight: .semibold)).accessibilityAddTraits(.isHeader)
+            HStack(spacing: 10) {
+                StatTile(label: b.bestDay.map { "Best day · \($0.day.formatted(.dateTime.day().month(.abbreviated)))" } ?? "Best day",
+                         value: "\((b.bestDay?.words ?? 0).formatted()) words")
+                StatTile(label: "Longest dictation", value: "\(b.longestWords.formatted()) words")
+                StatTile(label: "Fastest pace", value: b.fastestWPM > 0 ? "\(b.fastestWPM) wpm" : "—")
+            }
+        }
+    }
+}
+
+/// Ready / paused / what needs fixing, with the one action that goes with it.
+private struct StatusCard: View {
+    let app: AppDelegate
+    @ObservedObject var model: MainModel
+
+    var body: some View {
+        let _ = model.refresh
+        let problem = app.setupProblem
+        HStack(spacing: 14) {
+            Circle().fill(problem != nil ? Color.orange : (app.isPaused ? Color.secondary : Mist.accent))
+                .frame(width: 10, height: 10).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(problem ?? (app.isPaused ? "Paused" : "Ready")).font(.system(size: 15, weight: .semibold))
+                Text(problem != nil ? "Fix this so VoiceType can type for you."
+                     : app.isPaused ? "\(triggerName) is off for up to an hour. \(SpeechModelInfo.name(app)) is loaded."
+                     : "Hold \(triggerName) anywhere and start talking. \(SpeechModelInfo.name(app)), runs only on this Mac.")
+                    .font(.system(size: 13)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            if problem != nil {
+                Button("Fix") { app.showOnboarding() }
+            } else {
+                Button(app.isPaused ? "Resume" : "Pause for 1 hour") { app.togglePause(); model.refresh += 1 }
+            }
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Mist.card))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Mist.border))
+        .accessibilityElement(children: .contain)
+    }
+}
+
+/// The Home tab's weekly section: last-7-days numbers, words per day, and where you dictate most.
+/// Shows nothing before the first dictation.
+private struct Dashboard: View {
+    @ObservedObject var history: HistoryStore
+
+    var body: some View {
+        let entries = history.items.map { UsageStats.Entry(date: $0.date, text: $0.text, audioMillis: $0.audioMillis, app: $0.app) }
+        let s = UsageStats.lastSevenDays(entries)
+        if s.words > 0 {
+            let streak = UsageStats.streak(entries)
+            let apps = UsageStats.topApps(entries)
+            let perDay = UsageStats.wordsPerDay(entries)
+            let maxWords = perDay.map(\.words).max() ?? 0
+            VStack(spacing: 10) {
+                HStack(spacing: 10) {
+                    StatTile(label: "Words · 7 days", value: s.words.formatted())
+                    // wpm needs dictations with a known length; older history has none.
+                    StatTile(label: "Speaking pace", value: s.wordsPerMinute > 0 ? "\(s.wordsPerMinute) wpm" : "—")
+                    StatTile(label: "Saved vs typing", value: "\(s.minutesSaved) min")
+                    StatTile(label: "Streak", value: "\(streak) day\(streak == 1 ? "" : "s")")
+                }
+                HStack(alignment: .top, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Words per day").font(.system(size: 12)).foregroundColor(.secondary)
+                        Chart(perDay, id: \.day) { d in
+                            let isToday = d.day == perDay.last?.day
+                            // Named days (not a date axis), so each label sits centred under its bar.
+                            BarMark(x: .value("Day", isToday ? "Today" : d.day.formatted(.dateTime.weekday(.abbreviated))),
+                                    y: .value("Words", d.words), width: .fixed(28))
+                                .foregroundStyle(Mist.accent.opacity(isToday ? 1 : 0.5))
+                                .cornerRadius(4)
+                                .annotation(position: .top, spacing: 4) {
+                                    if d.words > 0 {
+                                        Text(d.words.formatted(.number.notation(.compactName)))
+                                            .font(.system(size: 10).monospacedDigit()).foregroundColor(.secondary)
+                                    }
+                                }
+                        }
+                        .chartXAxis { AxisMarks { _ in AxisValueLabel().font(.system(size: 11)) } }
+                        .chartYAxis(.hidden)
+                        // Headroom so the tallest bar's number isn't clipped.
+                        .chartYScale(domain: 0...max(1, maxWords + maxWords / 4))
+                        .frame(height: 100)
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Mist.tile))
+                    if !apps.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Top apps").font(.system(size: 12)).foregroundColor(.secondary)
+                            ForEach(apps, id: \.app) { a in
+                                HStack {
+                                    Text(a.app).font(.system(size: 13)).lineLimit(1)
+                                    Spacer(minLength: 8)
+                                    Text("\(a.percent)%").font(.system(size: 13).monospacedDigit()).foregroundColor(.secondary)
+                                }
+                                .accessibilityElement(children: .combine)
+                            }
+                        }
+                        .padding(14)
+                        .frame(width: 200, alignment: .topLeading)
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Mist.tile))
+                    }
+                }
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        } else {
+            VStack(spacing: 6) {
+                Text("Nothing this week yet").font(.system(size: 15, weight: .semibold))
+                Text("Your words, pace and streak for the week show up here once you dictate.")
+                    .font(.system(size: 13)).foregroundColor(.secondary).multilineTextAlignment(.center)
+            }
+            .padding(32)
+            .frame(maxWidth: .infinity)
+        }
+    }
+}
+
+/// One number on the Home dashboard.
+private struct StatTile: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label).font(.system(size: 12)).foregroundColor(.secondary)
+            Text(value).font(.system(size: 22, weight: .semibold).monospacedDigit())
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Mist.tile))
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -148,7 +351,7 @@ private struct StatusFooter: View {
         let _ = model.refresh
         let problem = app.setupProblem
         HStack(spacing: 8) {
-            Circle().fill(problem == nil ? Color.green : Color.orange).frame(width: 7, height: 7)
+            Circle().fill(problem == nil ? Mist.accent : Color.orange).frame(width: 7, height: 7)
                 .accessibilityHidden(true)
             Text(problem ?? "\(app.isPaused ? "Paused" : "Ready") · \(SpeechModelInfo.name(app)) · runs only on this Mac")
                 .font(.system(size: 12)).foregroundColor(.secondary).lineLimit(1)
@@ -204,15 +407,6 @@ private struct HistoryView: View {
         return out
     }
 
-    /// "Last 7 days · 1,240 words · 132 wpm · 18 min saved"; nil before the first dictation.
-    private var statsLine: String? {
-        let s = UsageStats.lastSevenDays(history.items.map { .init(date: $0.date, text: $0.text, audioMillis: $0.audioMillis) })
-        guard s.words > 0 else { return nil }
-        var parts = ["Last 7 days", "\(s.words.formatted()) word\(s.words == 1 ? "" : "s")"]
-        if s.wordsPerMinute > 0 { parts.append("\(s.wordsPerMinute) wpm") }
-        if s.minutesSaved > 0 { parts.append("\(s.minutesSaved) min saved vs typing") }
-        return parts.joined(separator: " · ")
-    }
 
     var body: some View {
         let q = model.historyQuery.lowercased()
@@ -223,15 +417,9 @@ private struct HistoryView: View {
                 TextField("Search what you said", text: $model.historyQuery).textFieldStyle(.plain).font(.system(size: 13))
             }
             .padding(.horizontal, 10).frame(height: 32)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
-            .padding(.horizontal, 24).padding(.top, 16).padding(.bottom, 8)
-
-            if let line = statsLine {
-                Text(line)
-                    .font(.system(size: 12).monospacedDigit()).foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 36).padding(.bottom, 4)
-            }
+            .background(RoundedRectangle(cornerRadius: 9).fill(Mist.card))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(Mist.border))
+            .padding(.horizontal, 24).padding(.top, 16).padding(.bottom, 10)
 
             if items.isEmpty {
                 VStack(spacing: 6) {
@@ -286,7 +474,7 @@ private struct HistoryRow: View {
             Button("Copy") { copy(item.text) }.controlSize(.small).opacity(hovering ? 1 : 0)
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(hovering ? Color.primary.opacity(0.06) : Color.clear))
+        .background(RoundedRectangle(cornerRadius: 8).fill(hovering ? Mist.tile : Color.clear))
         .contentShape(Rectangle())
         .onHover(perform: onHover)
         .contextMenu {
@@ -343,7 +531,7 @@ private struct DictionaryView: View {
                     }
                 }
                 .listStyle(.inset)
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.1)))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Mist.border))
                 .clipShape(RoundedRectangle(cornerRadius: 10))
             }
         }
@@ -410,7 +598,7 @@ private struct StylesView: View {
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.1)))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Mist.border))
                 .disabled(!polish)
                 .opacity(polish ? 1 : 0.5)
                 example
@@ -444,7 +632,7 @@ private struct StylesView: View {
             .pickerStyle(.segmented).labelsHidden().fixedSize()
         }
         .padding(.horizontal, 14).padding(.vertical, 12)
-        .background(model.styleExample == c ? Color.primary.opacity(0.06) : Color.clear)
+        .background(model.styleExample == c ? Mist.tile : Color.clear)
         .contentShape(Rectangle())
         .onTapGesture { model.styleExample = c }
     }
@@ -467,7 +655,7 @@ private struct StylesView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.04)))
+        .background(RoundedRectangle(cornerRadius: 10).fill(Mist.tile))
     }
 }
 
@@ -479,9 +667,11 @@ struct SettingsPane: View {
     @ObservedObject var history: HistoryStore
     @AppStorage(Key.trigger) var trigger = TriggerKey.fn.rawValue
     @AppStorage(Key.handsFreeShortcut) var handsFreeShortcut = true
+    @AppStorage(Key.sounds) var sounds = true
     @AppStorage(Key.language) var language = "en"
     @AppStorage(Key.englishEngine) var engine = EngineKind.hindiEnglish.rawValue
     @AppStorage(Key.script) var script = "latin"
+    @AppStorage(Key.translate) var translate = false
     @AppStorage(Key.fillers) var fillers = true
     @AppStorage(Key.corrections) var corrections = true
     @AppStorage(Key.commands) var commands = true
@@ -538,17 +728,35 @@ struct SettingsPane: View {
                             .font(.caption).foregroundColor(.secondary)
                     }
                 }
+                Toggle(isOn: $sounds) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Play sounds")
+                        Text("A soft purr when VoiceType starts listening, and a pop when it stops.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }
                 LabeledContent("Language") {
                     Picker("Language", selection: $language) {
                         Text("English").tag("en"); Text("हिंदी").tag("hi"); Text("Both").tag("auto")
                     }
                     .pickerStyle(.segmented).labelsHidden().fixedSize()
                 }
-                LabeledContent("Hindi is written in") {
-                    Picker("Hindi is written in", selection: $script) {
-                        Text("Latin").tag("latin"); Text("देवनागरी").tag("devanagari")
+                if language != "en" {
+                    Toggle(isOn: $translate) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Translate to English")
+                            Text("Hindi and Hinglish are typed as plain English. English stays as it is.")
+                                .font(.caption).foregroundColor(.secondary)
+                        }
                     }
-                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                }
+                if language != "en" && !translate {
+                    LabeledContent("Hindi is written in") {
+                        Picker("Hindi is written in", selection: $script) {
+                            Text("Latin").tag("latin"); Text("देवनागरी").tag("devanagari")
+                        }
+                        .pickerStyle(.segmented).labelsHidden().fixedSize()
+                    }
                 }
             }
             Section("Setup") {
@@ -641,6 +849,7 @@ struct SettingsPane: View {
         .onChange(of: trigger) { _ in app.applyTrigger(); model.refresh += 1 }
         .onChange(of: handsFreeShortcut) { _ in app.applyTrigger() }
         .onChange(of: language) { _ in app.dictation.warmUp(); model.refresh += 1 }
+        .onChange(of: translate) { _ in app.dictation.warmUp() }
         .onChange(of: engine) { _ in model.refresh += 1 }
         .onChange(of: flowBarIdle) { _ in app.flowBar.refreshIdleVisibility() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refresh += 1 }

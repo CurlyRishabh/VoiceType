@@ -128,6 +128,7 @@ final class Dictation {
             return false
         }
         warmUp()
+        Self.cue(Self.startSound) // after the mic is live, so the sound means "speak now"
         recorder = rec
         handsFree = false
         decodedUpTo = 0
@@ -135,6 +136,17 @@ final class Dictation {
         startedAt = Date()
         state = .listening
         return true
+    }
+
+    private static let startSound = NSSound(named: "Purr")
+    private static let stopSound = NSSound(named: "Pop")
+
+    /// Short system sounds for "listening" and "done"; off in Settings › Dictation.
+    private static func cue(_ sound: NSSound?) {
+        guard UserDefaults.standard.bool(forKey: Key.sounds), let sound else { return }
+        sound.stop() // a quick second dictation restarts the sound instead of being silent
+        sound.volume = 0.5
+        sound.play()
     }
 
     func enterHandsFree() {
@@ -160,6 +172,7 @@ final class Dictation {
         state = .transcribing
         let gen = generation
         let captured = rec.stop()
+        Self.cue(Self.stopSound) // after stopping, so the sound isn't recorded
         let spec = self.spec
 
         // Only the part not already transcribed in the background is left.

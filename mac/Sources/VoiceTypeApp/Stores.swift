@@ -8,6 +8,7 @@ enum Key {
     static let language = "language"            // en | hi | auto
     static let englishEngine = "engine"         // fast_english | hindi_english
     static let script = "script"                // latin | devanagari
+    static let translate = "translate_to_english" // type Hindi speech as English
     static let silenceMs = "silence_ms"
     static let fillers = "rule_fillers", corrections = "rule_corrections", commands = "rule_commands"
     static let capitalize = "rule_capitalize", finalPunct = "rule_final_punct"
@@ -16,6 +17,7 @@ enum Key {
     static let history = "history_enabled", keepRecordings = "keep_recordings"
     static let dictionary = "dictionary"
     static let showHUD = "show_hud"
+    static let sounds = "sounds_enabled"         // start/stop cues
     static let trigger = "trigger"              // fn | right_option | option_space
     static let handsFreeShortcut = "hands_free_shortcut" // ⇧⌥ Space toggles hands-free
     static let flowBarIdle = "flow_bar_idle"    // show the idle sliver (off unless turned on in Advanced)
@@ -29,11 +31,11 @@ enum AppSettings {
 
     static func registerDefaults() {
         d.register(defaults: [
-            Key.language: "en", Key.englishEngine: EngineKind.hindiEnglish.rawValue, Key.script: "latin",
+            Key.language: "en", Key.translate: false, Key.englishEngine: EngineKind.hindiEnglish.rawValue, Key.script: "latin",
             Key.silenceMs: 1500, Key.fillers: true, Key.corrections: true, Key.commands: true,
             Key.capitalize: true, Key.finalPunct: true, Key.polish: true, Key.polishStyle: "casual",
             Key.hotkey: 0, Key.history: true, Key.keepRecordings: false, Key.showHUD: true,
-            Key.trigger: "fn", Key.flowBarIdle: false, Key.handsFreeShortcut: true, Key.onboardingDone: false,
+            Key.trigger: "fn", Key.flowBarIdle: false, Key.handsFreeShortcut: true, Key.sounds: true, Key.onboardingDone: false,
             Key.style(.messages): StyleChoice.casual.rawValue, Key.style(.email): StyleChoice.formal.rawValue,
             Key.style(.notes): StyleChoice.notes.rawValue, Key.style(.other): StyleChoice.off.rawValue,
         ])
@@ -44,11 +46,22 @@ enum AppSettings {
     }
 
     static var engineSpec: EngineSpec {
-        switch d.string(forKey: Key.language) {
-        case "hi": return EngineSpec(kind: .hindiEnglish, language: "hi")
-        case "auto": return EngineSpec(kind: .hindiEnglish, language: "")
-        default: return EngineSpec(kind: EngineKind(rawValue: d.string(forKey: Key.englishEngine) ?? "") ?? .hindiEnglish, language: "en")
-        }
+        let language = d.string(forKey: Key.language) ?? "en"
+        return translatingSpec(language, translate: d.bool(forKey: Key.translate)) ?? {
+            switch language {
+            case "hi": return EngineSpec(kind: .hindiEnglish, language: "hi")
+            case "auto": return EngineSpec(kind: .hindiEnglish, language: "")
+            default: return EngineSpec(kind: EngineKind(rawValue: d.string(forKey: Key.englishEngine) ?? "") ?? .hindiEnglish, language: "en")
+            }
+        }()
+    }
+
+    /// Translate to English = Whisper told the speech is English: it then writes English for Hindi
+    /// speech too. (Whisper's own translate task does nothing on large-v3-turbo, which was never
+    /// trained for it; Apple's on-device model translated better but refused harmless sentences.)
+    /// nil when there is nothing to translate (English only, or the switch is off).
+    static func translatingSpec(_ language: String, translate: Bool) -> EngineSpec? {
+        translate && language != "en" ? EngineSpec(kind: .hindiEnglish, language: "en") : nil
     }
 
     /// The configured engine, but for English falls back to whichever model is actually imported
