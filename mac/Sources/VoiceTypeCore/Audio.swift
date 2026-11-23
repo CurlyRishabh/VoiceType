@@ -265,7 +265,13 @@ public enum WhisperPrompt {
                 hits += 1
             }
         }
-        return hits >= 2 && rest.trimmingCharacters(in: .whitespaces).isEmpty
+        if hits >= 2 && rest.trimmingCharacters(in: .whitespaces).isEmpty { return true }
+        // Whisper also drops parts of terms ("QC" from "Cassy QC"): output made only of glossary
+        // words, from at least two different terms, is the same echo.
+        let words = normalize(text).split(separator: " ").map(String.init)
+        let termWords = terms.map { Set($0.split(separator: " ").map(String.init)) }
+        let fromGlossary = words.allSatisfy { w in termWords.contains { $0.contains(w) } }
+        return !words.isEmpty && fromGlossary && termWords.filter { !$0.isDisjoint(with: words) }.count >= 2
     }
 
     static func normalize(_ s: String) -> String {

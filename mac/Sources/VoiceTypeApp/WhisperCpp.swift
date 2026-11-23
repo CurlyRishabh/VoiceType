@@ -37,26 +37,29 @@ final class WhisperCppRecognizer: SpeechRecognizing {
         p.suppress_blank = true
         p.suppress_nst = true        // drop "[Music]"-style non-speech tokens
         let prompt = (prompt?.isEmpty ?? true) ? nil : prompt
+        let language = spec.language.isEmpty ? detectLanguage(samples) : spec.language
 
-        func decode(_ language: String) -> Int32 {
-            language.withCString { lang in
+        func decode(_ prompt: String?) -> String {
+            let status = language.withCString { lang in
                 Self.withOptionalCString(prompt) { promptPtr in
                     p.language = lang
                     p.initial_prompt = promptPtr
                     return samples.withUnsafeBufferPointer { whisper_full(ctx, p, $0.baseAddress, Int32($0.count)) }
                 }
             }
+            guard status == 0 else {
+                NSLog("VoiceType: whisper.cpp decode failed (%d)", status)
+                return ""
+            }
+            return (0..<whisper_full_n_segments(ctx))
+                .compactMap { whisper_full_get_segment_text(ctx, $0).map { String(cString: $0) } }
+                .joined()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        let status = decode(spec.language.isEmpty ? detectLanguage(samples) : spec.language)
-        guard status == 0 else {
-            NSLog("VoiceType: whisper.cpp decode failed (%d)", status)
-            return ""
-        }
-        let text = (0..<whisper_full_n_segments(ctx))
-            .compactMap { whisper_full_get_segment_text(ctx, $0).map { String(cString: $0) } }
-            .joined()
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if let prompt, WhisperPrompt.isEcho(text, prompt: prompt) { return "" }
+        let text = decode(prompt)
+        // Short clips (Hindi forced to English most of all) can come back as the prompt itself
+        // instead of the speech: decode once more without it.
+        if let prompt, WhisperPrompt.isEcho(text, prompt: prompt) { return decode(nil) }
         return text
     }
 

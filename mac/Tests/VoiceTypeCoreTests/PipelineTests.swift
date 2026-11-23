@@ -240,6 +240,11 @@ struct AudioLogicTests {
         #expect(!WhisperPrompt.isEcho("Cassie QC agent.", prompt: prompt))                    // one term: real dictation
         #expect(!WhisperPrompt.isEcho("Ask Cassie QC agent about ChargeBee", prompt: prompt)) // real sentence
         #expect(!WhisperPrompt.isEcho("", prompt: prompt))
+        // Real case: Hinglish clips forced to English came back as the prompt minus "Cassy".
+        let mine = "Cassy QC, rex-lien, EC2, ACCELA."
+        #expect(WhisperPrompt.isEcho("QC, rex-lien, EC2, ACCELA.", prompt: mine))
+        #expect(!WhisperPrompt.isEcho("Cassy QC", prompt: mine))          // one term, even split
+        #expect(!WhisperPrompt.isEcho("QC is done for EC2", prompt: mine)) // real words around terms
     }
 }
 
