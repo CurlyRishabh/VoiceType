@@ -63,6 +63,7 @@ public final class WavWriter {
         if sinceHeader >= Self.headerEvery {
             sinceHeader = 0
             try? put(WAV.header(dataBytes: sampleCount * WAV.bytesPerSample), at: 0)
+            fsync(fd) // a power cut loses at most these few seconds
         }
     }
 
@@ -93,28 +94,44 @@ public final class WavWriter {
     }
 }
 
-/// Reads back what `WavWriter` wrote (including a file still being written).
-public enum WavReader {
+/// Reads back what `WavWriter` wrote (including a file still being written). One open file for
+/// all reads: a meeting reads a chunk every few seconds.
+public final class WavReader {
+    public let url: URL
+    private let fd: Int32
+
+    /// nil when the file is missing or isn't one of ours.
+    public init?(url: URL) {
+        self.url = url
+        fd = open(url.path, O_RDONLY)
+        guard fd >= 0 else { return nil }
+        var header = [UInt8](repeating: 0, count: WAV.headerSize)
+        let n = header.withUnsafeMutableBytes { pread(fd, $0.baseAddress, WAV.headerSize, 0) }
+        guard n == WAV.headerSize, WAV.isOurs(Data(header)) else { Darwin.close(fd); return nil }
+    }
+
+    deinit { Darwin.close(fd) }
+
     /// Samples in the file, from its size (the header may lag behind while recording or after a crash).
-    public static func sampleCount(_ url: URL) -> Int {
-        guard let h = try? FileHandle(forReadingFrom: url) else { return 0 }
-        defer { try? h.close() }
-        guard let header = try? h.read(upToCount: WAV.headerSize), WAV.isOurs(header),
-              let size = try? h.seekToEnd() else { return 0 }
-        return max(0, Int(size) - WAV.headerSize) / WAV.bytesPerSample
+    public var sampleCount: Int {
+        var st = stat()
+        guard fstat(fd, &st) == 0 else { return 0 }
+        return max(0, Int(st.st_size) - WAV.headerSize) / WAV.bytesPerSample
     }
 
     /// Samples in `range` (clipped to the file) as Float32.
-    public static func read(_ url: URL, _ range: Range<Int>) -> [Float] {
-        let r = max(0, range.lowerBound)..<min(sampleCount(url), range.upperBound)
-        guard !r.isEmpty, let h = try? FileHandle(forReadingFrom: url) else { return [] }
-        defer { try? h.close() }
-        guard (try? h.seek(toOffset: UInt64(WAV.headerSize + r.lowerBound * WAV.bytesPerSample))) != nil,
-              let data = try? h.read(upToCount: r.count * WAV.bytesPerSample) else { return [] }
-        return data.withUnsafeBytes { raw in
-            raw.bindMemory(to: Int16.self).map { Float(Int16(littleEndian: $0)) / 32767 }
-        }
+    public func read(_ range: Range<Int>) -> [Float] {
+        let r = max(0, range.lowerBound)..<min(sampleCount, range.upperBound)
+        guard !r.isEmpty else { return [] }
+        var pcm = [Int16](repeating: 0, count: r.count)
+        let bytes = pcm.withUnsafeMutableBytes { pread(fd, $0.baseAddress, r.count * WAV.bytesPerSample, off_t(WAV.headerSize + r.lowerBound * WAV.bytesPerSample)) }
+        guard bytes > 0 else { return [] }
+        return pcm.prefix(bytes / WAV.bytesPerSample).map { Float(Int16(littleEndian: $0)) / 32767 }
     }
+
+    public static func sampleCount(_ url: URL) -> Int { WavReader(url: url)?.sampleCount ?? 0 }
+
+    public static func read(_ url: URL, _ range: Range<Int>) -> [Float] { WavReader(url: url)?.read(range) ?? [] }
 
     /// Rewrites the header's sizes from the file size (a recording cut off by a crash).
     public static func repairHeader(_ url: URL) {
@@ -134,22 +151,36 @@ public enum WavReader {
 /// is never dropped.
 public struct ChannelAligner: Sendable {
     public let tolerance: Int
+    /// A gap longer than this is a bad timestamp, not a pause in the audio (the meeting stops on
+    /// sleep, and device switches take seconds).
+    public static let maxGap = sampleRate * 120
+
     public init(tolerance: Int = sampleRate) { self.tolerance = tolerance }
 
     /// Silence to write before a buffer captured at `expected` (samples since the meeting started).
-    public func gap(written: Int, expected: Int) -> Int {
-        expected - written > tolerance ? expected - written : 0
+    /// `exact`: the first buffer after the capture (re)started, when the gap is a real one and is
+    /// filled to the sample.
+    public func gap(written: Int, expected: Int, exact: Bool = false) -> Int {
+        let g = expected - written
+        guard g > (exact ? 0 : tolerance) else { return 0 }
+        return min(g, Self.maxGap)
     }
 
     /// Host-clock nanoseconds since the start -> sample position.
     public static func position(nanosSinceStart: UInt64) -> Int { Int(nanosSinceStart / 1000 * UInt64(sampleRate) / 1_000_000) }
 }
 
-/// A decode chunk and how much speech the VAD found in it.
+/// A decode chunk and where the VAD found speech in it.
 public struct ChunkPlan: Equatable, Sendable {
     public let range: Range<Int>
-    public let speechSamples: Int
-    public init(range: Range<Int>, speechSamples: Int) { self.range = range; self.speechSamples = speechSamples }
+    /// The VAD segments inside `range` (absolute sample positions).
+    public let speech: [Range<Int>]
+    public init(range: Range<Int>, speech: [Range<Int>]) { self.range = range; self.speech = speech }
+
+    public var speechSamples: Int { speech.reduce(0) { $0 + $1.count } }
+
+    /// `speech` relative to the start of the chunk.
+    public var speechInChunk: [Range<Int>] { speech.map { ($0.lowerBound - range.lowerBound)..<($0.upperBound - range.lowerBound) } }
 }
 
 /// `AudioChunker.plan`, one VAD segment at a time, for audio that is still being recorded: the same
@@ -158,7 +189,7 @@ public struct ChunkPlan: Equatable, Sendable {
 public struct LiveChunker: Sendable {
     public let maxChunk: Int
     private var current: Range<Int>?
-    private var speech = 0
+    private var speech: [Range<Int>] = []
 
     public init(maxChunk: Int = AudioChunker.maxChunk) { self.maxChunk = maxChunk }
 
@@ -168,12 +199,12 @@ public struct LiveChunker: Sendable {
         guard !r.isEmpty else { return [] }
         if let c = current, r.lowerBound - c.upperBound < AudioChunker.maxMergeGap, r.upperBound - c.lowerBound <= maxChunk {
             current = c.lowerBound..<max(c.upperBound, r.upperBound)
-            speech += s.length
+            speech.append(s.start..<s.end)
             return []
         }
         let closed = close(total: nil)
         current = r
-        speech = s.length
+        speech = [s.start..<s.end]
         return closed
     }
 
@@ -197,11 +228,9 @@ public struct LiveChunker: Sendable {
         current = nil
         let r = c.lowerBound..<min(total ?? c.upperBound, c.upperBound)
         guard !r.isEmpty else { return [] }
-        var left = speech
+        let speech = self.speech
         return AudioChunker.split(r, maxChunk).map { piece in
-            let s = min(left, piece.count)
-            left -= s
-            return ChunkPlan(range: piece, speechSamples: s)
+            ChunkPlan(range: piece, speech: speech.compactMap { s in s.clamped(to: piece).isEmpty ? nil : s.clamped(to: piece) })
         }
     }
 }
@@ -224,6 +253,16 @@ public enum AudioLevel {
 
     /// A chunk too quiet to hold speech worth decoding (about -54 dBFS RMS): Whisper only invents text there.
     public static func isNearSilent(_ s: [Float], threshold: Float = 0.002) -> Bool { rms(s) < threshold }
+
+    /// The same, measured only where the VAD heard speech (`ranges` relative to `s`): a chunk can hold
+    /// up to 3 s of merged silence, which would make a quiet short sentence look silent.
+    public static func isNearSilent(_ s: [Float], speech ranges: [Range<Int>], threshold: Float = 0.002) -> Bool {
+        let inside = ranges.flatMap { r -> ArraySlice<Float> in
+            let c = r.clamped(to: 0..<s.count)
+            return s[c]
+        }
+        return isNearSilent(inside.isEmpty ? s : Array(inside), threshold: threshold)
+    }
 }
 
 /// Notices a channel that delivers only digital silence (exact zeros). That is what a process tap
@@ -313,8 +352,9 @@ public struct MeetingLimit: Sendable {
         return nil
     }
 
-    /// A recording this short was probably started by mistake ("keep or discard?").
-    public static func looksAccidental(words: Int) -> Bool { words < 20 }
+    /// A recording this short was probably started by mistake ("keep or discard?"). Not a long
+    /// meeting where you only listened and the others' audio wasn't captured.
+    public static func looksAccidental(words: Int, seconds: Double) -> Bool { words < 20 && seconds < 5 * 60 }
 
     public static func title(_ minutes: Int) -> String { minutes < 60 ? "\(minutes) min" : "\(minutes / 60) hour\(minutes == 60 ? "" : "s")" }
 }
@@ -334,5 +374,32 @@ public enum DiskSpace {
         let m = minutesLeft(freeBytes: freeBytes)
         if m < 2 { return .critical }
         return m < 60 ? .low(minutesLeft: m) : .ok
+    }
+}
+
+/// A first-in, first-out queue with O(1) pops (an Array's removeFirst is O(n)). `pushFront` puts a
+/// job back at the head (a retry).
+public struct Deque<Element> {
+    private var items: [Element] = []
+    private var head = 0
+
+    public init() {}
+
+    public var isEmpty: Bool { head >= items.count }
+    public var count: Int { items.count - head }
+
+    public mutating func append(_ e: Element) { items.append(e) }
+    public mutating func append(contentsOf es: [Element]) { items.append(contentsOf: es) }
+
+    public mutating func pushFront(_ e: Element) {
+        if head > 0 { head -= 1; items[head] = e } else { items.insert(e, at: 0) }
+    }
+
+    public mutating func popFirst() -> Element? {
+        guard head < items.count else { return nil }
+        let e = items[head]
+        head += 1
+        if head > 64, head * 2 > items.count { items.removeFirst(head); head = 0 } // reclaim now and then
+        return e
     }
 }

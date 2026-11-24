@@ -2,8 +2,23 @@ import Foundation
 
 /// What `meeting.json` holds: everything the Meetings list shows without opening the transcript.
 public struct MeetingInfo: Codable, Equatable, Sendable {
-    public enum Status: String, Codable, Sendable { case recording, transcribing, ready, failed }
-    public enum StopReason: String, Codable, Sendable { case user, maxLength, sleep, lowDisk, quit, crash }
+    /// `partial`: transcribed, but some chunks failed (their audio is kept).
+    public enum Status: String, Codable, Sendable {
+        case recording, transcribing, ready, partial, failed
+
+        /// There is a transcript to show and copy.
+        public var hasTranscript: Bool { self == .ready || self == .partial }
+
+        /// After transcribing `chunks` parts of which `failed` failed for good.
+        public static func after(chunks: Int, failed: Int) -> Status {
+            if chunks > 0 && failed >= chunks { return .failed }
+            return failed > 0 ? .partial : .ready
+        }
+
+        /// Whether the audio stays once the transcript is saved: only a complete one lets it go.
+        public func keepsAudio(setting: Bool) -> Bool { setting || self != .ready }
+    }
+    public enum StopReason: String, Codable, Sendable { case user, maxLength, sleep, lowDisk, writeError, quit, crash }
     /// What the system-audio channel delivered. `silent` = only digital silence (permission denied,
     /// or nothing played at all); `unavailable` = the tap could not be created.
     public enum SystemAudio: String, Codable, Sendable { case unknown, ok, silent, unavailable }
@@ -30,6 +45,9 @@ public struct MeetingInfo: Codable, Equatable, Sendable {
     public var wordCount = 0
     public var systemAudio: SystemAudio = .unknown
     public var echoLinesRemoved = 0
+    /// Chunks that could not be transcribed, and how much audio they held (seconds).
+    public var failedChunks = 0
+    public var missingSeconds: Double = 0
     public var audioKept = false
     public var error: String?
 
@@ -41,7 +59,7 @@ public struct MeetingInfo: Codable, Equatable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case version, title, startedAt, endedAt, status, stopReason, durationSeconds, decodeSeconds, rtf, tailSeconds
-        case model, languageSetting, languages, wordCount, systemAudio, echoLinesRemoved, audioKept, error
+        case model, languageSetting, languages, wordCount, systemAudio, echoLinesRemoved, failedChunks, missingSeconds, audioKept, error
     }
 
     /// Lenient: a field added in a later version, or a hand-edited file, doesn't hide the meeting.
@@ -63,6 +81,8 @@ public struct MeetingInfo: Codable, Equatable, Sendable {
         wordCount = try c.decodeIfPresent(Int.self, forKey: .wordCount) ?? 0
         systemAudio = (try? c.decodeIfPresent(SystemAudio.self, forKey: .systemAudio)) ?? .unknown
         echoLinesRemoved = try c.decodeIfPresent(Int.self, forKey: .echoLinesRemoved) ?? 0
+        failedChunks = try c.decodeIfPresent(Int.self, forKey: .failedChunks) ?? 0
+        missingSeconds = try c.decodeIfPresent(Double.self, forKey: .missingSeconds) ?? 0
         audioKept = try c.decodeIfPresent(Bool.self, forKey: .audioKept) ?? false
         error = try c.decodeIfPresent(String.self, forKey: .error)
     }
@@ -105,6 +125,9 @@ public enum MeetingRender {
         lines.append("- **Transcribed on this Mac:** " + engine.joined(separator: " · "))
         if info.systemAudio == .silent || info.systemAudio == .unavailable {
             lines.append("- **Note:** no sound from other apps was captured, so only Me was transcribed.")
+        }
+        if info.status == .partial {
+            lines.append("- **Note:** about \(MeetingDates.duration(info.missingSeconds)) of speech could not be transcribed; the audio is kept in this folder.")
         }
         return lines.joined(separator: "\n")
     }
@@ -240,9 +263,12 @@ public enum MeetingFiles {
         try Data(md.utf8).write(to: folder.appendingPathComponent(transcriptMarkdown), options: .atomic)
     }
 
-    public static func readSegments(_ folder: URL) -> [TranscriptSegment] {
+    public static func readSegments(_ folder: URL) -> [TranscriptSegment] { readTranscript(folder) ?? [] }
+
+    /// nil when transcript.json is missing or unreadable (it is written in one go, so a readable one is complete).
+    public static func readTranscript(_ folder: URL) -> [TranscriptSegment]? {
         (try? Data(contentsOf: folder.appendingPathComponent(transcriptJSON)))
-            .flatMap { try? decoder.decode(TranscriptFile.self, from: $0) }?.segments ?? []
+            .flatMap { try? decoder.decode(TranscriptFile.self, from: $0) }?.segments
     }
 
     public static func audioFiles(_ folder: URL) -> [URL] {

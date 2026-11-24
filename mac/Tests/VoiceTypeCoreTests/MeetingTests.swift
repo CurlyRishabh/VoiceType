@@ -90,45 +90,119 @@ private func seg(_ start: Double, _ end: Double, _ ch: MeetingChannel, _ text: S
         #expect(EchoFilter.isEcho("Okay.", of: "okay"))
         #expect(!EchoFilter.isEcho("Okay.", of: "Okay, let's move on to the next item."))
         #expect(!EchoFilter.isEcho("Yes", of: "No"))
+        #expect(!EchoFilter.isEcho("I think so.", of: "So I think the main thing is that we need to get the export out"))
     }
 
-    @Test func toleratesMisheardWords() {
-        // Whisper on the faint echo misses or changes a word or two.
-        #expect(EchoFilter.isEcho("the deploy is blocked on the database migration",
-                                  of: "The deploy is blocked on the DB migration, sorry."))
+    @Test func toleratesAMisheardWord() {
+        // Whisper on the faint echo gets a word wrong: only the words around it stop matching.
+        #expect(EchoFilter.isEcho("we should ship the beta on friday after the security review is done",
+                                  of: "We should ship the beta on Friday after the safety review is done."))
     }
 
-    @Test func lcs() {
-        #expect(EchoFilter.commonSubsequence(["a", "b", "c", "d"], ["a", "c", "d", "e"]) == 3)
-        #expect(EchoFilter.commonSubsequence([], ["a"]) == 0)
+    @Test func commonWordsInADifferentOrderAreNotAnEcho() {
+        #expect(!EchoFilter.isEcho("That should be fine.", of: "the rest of it should be fine what I want"))
+        #expect(!EchoFilter.isEcho("Yes, we can do that.", of: "if we can do the migration first then the"))
+    }
+
+    /// A long Others turn (~70 words over ~27 s, in three Whisper segments) and short Me replies
+    /// placed at every point of it: none of the replies may go, however many common words they share
+    /// with the turn. (The round-1 filter dropped 11 of these 13.)
+    static let monologue = """
+    So I think the main thing is that we need to get the export out before the review, and I know that it is not \
+    going to be easy, but if we can do the migration first then the rest of it should be fine. What I want to do is \
+    make sure that you and I are on the same page about that, so that we do not have to go back and change it again.
+    """
+
+    static func monologueSegments() -> [TranscriptSegment] {
+        let w = monologue.split(separator: " ").map(String.init)
+        let per = w.count / 3, rate = 2.6
+        var t = 0.0
+        return (0..<3).map { k in
+            let part = k < 2 ? Array(w[(k * per)..<((k + 1) * per)]) : Array(w[(2 * per)...])
+            let d = Double(part.count) / rate
+            defer { t += d }
+            return seg(t, t + d, .others, part.joined(separator: " "))
+        }
+    }
+
+    @Test func longUnrelatedOthersTurnKeepsMyReplies() {
+        let others = Self.monologueSegments()
+        let replies = ["I think so.", "Yeah, that is fine.", "I know that.", "That should be fine.", "Yes, we can do that.",
+                       "I think we can do that.", "Okay, so we do it first.", "I do not want to change it again.",
+                       "No, I think that is not going to be easy.", "Right, I am on the same page.", "We need to do the migration first.",
+                       "I think it is going to be fine if we do that.", "Can you send me the invoice numbers by Friday?"]
+        for reply in replies {
+            let length = Double(reply.split(separator: " ").count) / 2.6
+            for step in 0..<60 {
+                let at = Double(step) * 0.5 - 1
+                let (_, removed) = EchoFilter.apply(others + [seg(at, at + length, .me, reply)])
+                #expect(removed == 0, "dropped “\(reply)” at \(at) s")
+            }
+        }
+    }
+
+    @Test func echoInsideALongOthersTurnIsDropped() {
+        let others = Self.monologueSegments()
+        // Others' segment 2 starts "...going to be easy, but if we can do the migration first..."; the mic
+        // picks up a stretch of it at the same moment.
+        let s = others[1]
+        let echo = seg(s.start + 1, s.start + 5, .me, "but if we can do the migration first then the rest")
+        let (kept, removed) = EchoFilter.apply(others + [echo])
+        #expect(removed == 1 && kept.count == 3)
+    }
+
+    @Test func wordTimesInsideASegment() {
+        let s = seg(0, 10, .others, "one two three four five six seven eight nine ten")
+        #expect(EchoFilter.wordsSpoken(in: s, within: 2...4.9) == ["three", "four", "five"])
     }
 }
 
 @Suite struct MeetingTextFilterTests {
     func t(_ text: String, _ s: Double = 0, _ e: Double = 2) -> TimedText { TimedText(text: text, start: s, end: e) }
+    func clean(_ segs: [TimedText], _ speech: Int, _ prev: MeetingTextFilter.Previous? = nil, start: Double = 20, end: Double = 25) -> [TimedText] {
+        MeetingTextFilter.clean(segs, speechMillis: speech, previous: prev, start: start, end: end).kept
+    }
 
     @Test func dropsNearSilencePhrasesPerChunk() {
-        #expect(MeetingTextFilter.clean([t("Thank you for watching!")], speechMillis: 600, previous: nil).isEmpty)
-        #expect(MeetingTextFilter.clean([t("You")], speechMillis: 400, previous: nil).isEmpty)
+        #expect(clean([t("Thank you for watching!")], 600).isEmpty)
+        #expect(clean([t("You")], 400).isEmpty)
         // Real speech with the same words is kept.
-        #expect(MeetingTextFilter.clean([t("Thank you.")], speechMillis: 900, previous: nil).map(\.text) == ["Thank you."])
+        #expect(clean([t("Thank you.")], 900).map(\.text) == ["Thank you."])
     }
 
     @Test func stripsTagsAndLoops() {
-        let out = MeetingTextFilter.clean([t("[Music]"), t("go go go go go now", 2, 4)], speechMillis: 4000, previous: nil)
-        #expect(out == [t("go now", 2, 4)])
+        #expect(clean([t("[Music]"), t("go go go go go now", 2, 4)], 4000) == [t("go now", 2, 4)])
     }
 
     @Test func collapsesRepeatedSegmentsInAChunk() {
-        let out = MeetingTextFilter.clean([t("Let's start.", 0, 2), t("let's start", 2, 4), t("Agenda first.", 4, 6)], speechMillis: 6000, previous: nil)
+        let out = clean([t("Let's start.", 0, 2), t("let's start", 2, 4), t("Agenda first.", 4, 6)], 6000)
         #expect(out.map(\.text) == ["Let's start.", "Agenda first."])
         #expect(out[0].end == 4)
     }
 
-    @Test func dropsAChunkThatRepeatsThePreviousOne() {
-        #expect(MeetingTextFilter.clean([t("Please hold, your call is important to us.")], speechMillis: 5000,
-                                        previous: "please hold your call is important to us").isEmpty)
-        #expect(MeetingTextFilter.clean([t("New words.")], speechMillis: 5000, previous: "Old words.").count == 1)
+    @Test func dropsAChunkThatRepeatsTheOneJustBefore() {
+        let hold = MeetingTextFilter.Previous(text: "please hold your call is important to us", end: 18)
+        #expect(clean([t("Please hold, your call is important to us.")], 5000, hold).isEmpty)
+        #expect(clean([t("New words here.")], 5000, hold).count == 1)
+    }
+
+    @Test func repeatsFarApartOrShortAreKept() {
+        // The same sentence a minute later is someone saying it again.
+        let long = MeetingTextFilter.Previous(text: "can everyone see my screen", end: 5)
+        #expect(clean([t("Can everyone see my screen?")], 3000, long, start: 60, end: 63).count == 1)
+        // "Okay." twice in a row is conversation.
+        let okay = MeetingTextFilter.Previous(text: "Okay.", end: 18)
+        #expect(clean([t("Okay.")], 600, okay).count == 1)
+    }
+
+    @Test func reportsWhatTheNextChunkComparesWith() {
+        let r = MeetingTextFilter.clean([t("Hello there everyone.")], speechMillis: 2000, previous: nil, start: 3, end: 7)
+        #expect(r.previous == .init(text: "Hello there everyone.", end: 7))
+        // Dropped as a repeat: still the reference for a third copy.
+        let again = MeetingTextFilter.clean([t("hello there everyone")], speechMillis: 2000, previous: r.previous, start: 9, end: 12)
+        #expect(again.kept.isEmpty && again.previous.end == 12)
+        // Nothing kept (near-silence phrase): the next chunk has nothing to repeat.
+        #expect(MeetingTextFilter.clean([t("you")], speechMillis: 300, previous: r.previous, start: 9, end: 12).previous.text == "")
     }
 }
 
@@ -179,6 +253,27 @@ private func seg(_ start: Double, _ end: Double, _ ch: MeetingChannel, _ text: S
         let ai = MeetingRender.forAI(info, lines: lines, timeZone: tz)
         #expect(ai.hasPrefix(MeetingRender.aiInstructions))
         #expect(ai.hasSuffix(plain))
+    }
+
+    @Test func partialNote() {
+        var i = info
+        i.status = .partial
+        i.missingSeconds = 75
+        #expect(MeetingRender.header(i, timeZone: TimeZone(identifier: "UTC")!).contains("about 1 min of speech could not be transcribed"))
+        #expect(MeetingInfo.Status.partial.hasTranscript && MeetingInfo.Status.ready.hasTranscript)
+        #expect(!MeetingInfo.Status.transcribing.hasTranscript && !MeetingInfo.Status.failed.hasTranscript)
+    }
+
+    @Test func statusAfterTranscribing() {
+        #expect(MeetingInfo.Status.after(chunks: 10, failed: 0) == .ready)
+        #expect(MeetingInfo.Status.after(chunks: 0, failed: 0) == .ready) // nobody spoke
+        #expect(MeetingInfo.Status.after(chunks: 10, failed: 1) == .partial)
+        #expect(MeetingInfo.Status.after(chunks: 10, failed: 10) == .failed)
+        // Only a complete transcript lets the audio go.
+        #expect(!MeetingInfo.Status.ready.keepsAudio(setting: false))
+        #expect(MeetingInfo.Status.ready.keepsAudio(setting: true))
+        #expect(MeetingInfo.Status.partial.keepsAudio(setting: false))
+        #expect(MeetingInfo.Status.failed.keepsAudio(setting: false))
     }
 
     @Test func emptyAndMicOnly() {
@@ -252,6 +347,16 @@ private func seg(_ start: Double, _ end: Double, _ ch: MeetingChannel, _ text: S
         #expect(info.status == .failed && info.title == "X" && info.wordCount == 0)
     }
 
+    @Test func transcriptValidity() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        #expect(MeetingFiles.readTranscript(dir) == nil)
+        try MeetingFiles.writeTranscript([], info: MeetingInfo(title: "X", startedAt: Date()), to: dir)
+        #expect(MeetingFiles.readTranscript(dir) == []) // written, even if nobody spoke
+        try Data("{".utf8).write(to: dir.appendingPathComponent("transcript.json"))
+        #expect(MeetingFiles.readTranscript(dir) == nil)
+    }
+
     @Test func audioFilesAndDelete() throws {
         let dir = tempDir()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -289,16 +394,22 @@ private func seg(_ start: Double, _ end: Double, _ ch: MeetingChannel, _ text: S
         try w.append(tone)
         try w.appendSilence(1000)
         #expect(w.sampleCount == 21_000)
+        #expect(WavReader(url: url.appendingPathExtension("missing")) == nil)
         // Readable while still being written (header sizes may lag).
         #expect(WavReader.sampleCount(url) == 21_000)
         let back = WavReader.read(url, 100..<200)
         #expect(back.count == 100)
         #expect(zip(back, tone[100..<200]).allSatisfy { abs($0 - $1) < 1e-4 })
         #expect(WavReader.read(url, 20_500..<30_000).allSatisfy { $0 == 0 }) // clipped to the file
-        #expect(WavReader.read(url, 20_500..<30_000).count == 500)
+        // One reader, many reads, while the file keeps growing.
+        let reader = try #require(WavReader(url: url))
+        try w.append([0.25])
+        #expect(reader.sampleCount == 21_001)
+        #expect(abs((reader.read(21_000..<21_001).first ?? 0) - 0.25) < 1e-4)
+        #expect(WavReader.read(url, 20_500..<30_000).count == 501)
         w.close()
         let header = try Data(contentsOf: url).prefix(44)
-        #expect(header == WAV.header(dataBytes: 42_000))
+        #expect(header == WAV.header(dataBytes: 42_002))
 
         // A crash leaves the last header patch behind: repair recomputes it from the size.
         let h = try FileHandle(forWritingTo: url)
@@ -306,7 +417,7 @@ private func seg(_ start: Double, _ end: Double, _ ch: MeetingChannel, _ text: S
         try h.write(contentsOf: WAV.header(dataBytes: 0))
         try h.close()
         WavReader.repairHeader(url)
-        #expect(try Data(contentsOf: url).prefix(44) == WAV.header(dataBytes: 42_000))
+        #expect(try Data(contentsOf: url).prefix(44) == WAV.header(dataBytes: 42_002))
     }
 
     @Test func readerRejectsOtherFiles() throws {
@@ -322,6 +433,9 @@ private func seg(_ start: Double, _ end: Double, _ ch: MeetingChannel, _ text: S
         #expect(a.gap(written: 16_000, expected: 16_500) == 0)    // jitter
         #expect(a.gap(written: 16_000, expected: 48_000) == 32_000) // device restarted 2 s later
         #expect(a.gap(written: 50_000, expected: 48_000) == 0)    // running ahead: never drop audio
+        #expect(a.gap(written: 16_000, expected: 16_500, exact: true) == 500) // first buffer after a (re)start
+        #expect(a.gap(written: 16_000, expected: 15_000, exact: true) == 0)
+        #expect(a.gap(written: 0, expected: Int.max / 2) == ChannelAligner.maxGap) // a bad timestamp can't allocate gigabytes
         #expect(ChannelAligner.position(nanosSinceStart: 2_500_000_000) == 40_000)
         #expect(ChannelAligner.position(nanosSinceStart: 3 * 3600 * 1_000_000_000) == 3 * 3600 * 16_000)
     }
@@ -356,7 +470,8 @@ private func seg(_ start: Double, _ end: Double, _ ch: MeetingChannel, _ text: S
         #expect(c.flush(position: 50_000).isEmpty) // could still merge
         #expect(c.flush(position: 52_000 + AudioChunker.maxMergeGap).isEmpty) // a segment starting now might still join
         let out = c.flush(position: 52_000 + AudioChunker.maxMergeGap + AudioChunker.pad + LiveChunker.lookback)
-        #expect(out == [ChunkPlan(range: 12_000..<52_000, speechSamples: 32_000)])
+        #expect(out == [ChunkPlan(range: 12_000..<52_000, speech: [16_000..<48_000])])
+        #expect(out[0].speechSamples == 32_000 && out[0].speechInChunk == [4000..<36_000])
         #expect(c.finish(total: 100_000).isEmpty)
     }
 
@@ -364,7 +479,11 @@ private func seg(_ start: Double, _ end: Double, _ ch: MeetingChannel, _ text: S
         var c = LiveChunker()
         _ = c.add(Segment(start: 0, length: 16_000))
         _ = c.add(Segment(start: 20_000, length: 16_000))
-        #expect(c.finish(total: 40_000) == [ChunkPlan(range: 0..<40_000, speechSamples: 32_000)])
+        #expect(c.finish(total: 40_000) == [ChunkPlan(range: 0..<40_000, speech: [0..<16_000, 20_000..<36_000])])
+        // A segment longer than a chunk is split, and so is its speech.
+        var long = LiveChunker(maxChunk: 10_000)
+        _ = long.add(Segment(start: 0, length: 15_000))
+        #expect(long.finish(total: 30_000).map(\.speechSamples) == [10_000, 5000])
     }
 
     @Test func levels() {
@@ -375,6 +494,11 @@ private func seg(_ start: Double, _ end: Double, _ ch: MeetingChannel, _ text: S
         #expect(AudioLevel.meter(1) == 1)
         #expect(AudioLevel.isNearSilent([Float](repeating: 0.001, count: 100)))
         #expect(!AudioLevel.isNearSilent([Float](repeating: 0.05, count: 100)))
+        // A short quiet sentence in a chunk that is mostly silence: judged on the speech only.
+        let chunk = [Float](repeating: 0, count: 9000) + [Float](repeating: 0.004, count: 1000)
+        #expect(AudioLevel.isNearSilent(chunk))
+        #expect(!AudioLevel.isNearSilent(chunk, speech: [9000..<10_000]))
+        #expect(AudioLevel.isNearSilent(chunk, speech: []))
     }
 
     @Test func silenceWatch() {
@@ -407,8 +531,9 @@ private func seg(_ start: Double, _ end: Double, _ ch: MeetingChannel, _ text: S
         #expect(l.check(elapsed: 25 * 60) == .warn(minutesLeft: 5))
         #expect(l.check(elapsed: 26 * 60) == nil) // warned once
         #expect(l.check(elapsed: 30 * 60) == .stop)
-        #expect(MeetingLimit.looksAccidental(words: 19))
-        #expect(!MeetingLimit.looksAccidental(words: 20))
+        #expect(MeetingLimit.looksAccidental(words: 19, seconds: 30))
+        #expect(!MeetingLimit.looksAccidental(words: 20, seconds: 30))
+        #expect(!MeetingLimit.looksAccidental(words: 3, seconds: 45 * 60)) // a long call where I only listened
         #expect(MeetingLimit.title(30) == "30 min" && MeetingLimit.title(60) == "1 hour" && MeetingLimit.title(180) == "3 hours")
     }
 
@@ -418,5 +543,23 @@ private func seg(_ start: Double, _ end: Double, _ ch: MeetingChannel, _ text: S
         #expect(DiskSpace.level(freeBytes: DiskSpace.reserve + 30 * DiskSpace.bytesPerMinute) == .low(minutesLeft: 30))
         #expect(DiskSpace.level(freeBytes: DiskSpace.reserve + DiskSpace.bytesPerMinute) == .critical)
         #expect(DiskSpace.level(freeBytes: 0) == .critical)
+    }
+}
+
+@Suite struct DequeTests {
+    @Test func fifoWithRetriesAtTheFront() {
+        var q = Deque<Int>()
+        #expect(q.isEmpty && q.popFirst() == nil)
+        q.append(contentsOf: Array(1...200))
+        for i in 1...150 { #expect(q.popFirst() == i) }
+        q.pushFront(150) // retry
+        #expect(q.count == 51)
+        #expect(q.popFirst() == 150)
+        q.append(201)
+        var rest: [Int] = []
+        while let x = q.popFirst() { rest.append(x) }
+        #expect(rest == Array(151...201))
+        q.pushFront(7)
+        #expect(q.popFirst() == 7 && q.isEmpty)
     }
 }

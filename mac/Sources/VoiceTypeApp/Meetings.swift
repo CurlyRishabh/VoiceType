@@ -62,23 +62,28 @@ final class MeetingStore: ObservableObject {
         return textCache[e.id]!.contains(q)
     }
 
-    /// New title in meeting.json and transcript.md; the folder follows unless it is still being written.
+    /// New title in meeting.json and transcript.md; the folder follows unless it is still being
+    /// written. Also brings a folder in line with a title set while it was in use.
     @discardableResult
     func rename(_ e: Entry, to title: String, folderInUse: Bool) -> Entry? {
         let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty, t != e.info.title else { return e }
+        guard !t.isEmpty else { return e }
         var info = e.info
+        let titleChanged = t != info.title
         info.title = t
         var folder = e.folder
         if !folderInUse {
             let name = MeetingFiles.folderName(start: info.startedAt, title: t)
-            if name != folder.lastPathComponent {
+            if !folder.lastPathComponent.hasPrefix(name) { // "<name> 2" (a duplicate) already fits
                 let dest = MeetingFiles.uniqueFolder(in: root, name: name)
                 if (try? FileManager.default.moveItem(at: folder, to: dest)) != nil { folder = dest }
             }
         }
-        try? MeetingFiles.writeInfo(info, to: folder)
-        if info.status == .ready { try? MeetingFiles.writeMarkdown(MeetingFiles.readSegments(folder), info: info, to: folder) }
+        guard titleChanged || folder != e.folder else { return e }
+        if titleChanged {
+            try? MeetingFiles.writeInfo(info, to: folder)
+            if info.status.hasTranscript { try? MeetingFiles.writeMarkdown(MeetingFiles.readSegments(folder), info: info, to: folder) }
+        }
         refresh()
         return entry(folder.lastPathComponent)
     }
@@ -127,6 +132,8 @@ final class MeetingController: ObservableObject {
     @Published private(set) var systemAudio: MeetingInfo.SystemAudio = .unknown
     /// The meeting being recorded or finished (its folder name).
     @Published private(set) var currentID: String?
+    /// The interrupted meeting being transcribed in the background.
+    @Published private(set) var recoveringID: String?
     @Published private(set) var title = "Meeting"
 
     var onPhase: ((Phase) -> Void)?
@@ -146,13 +153,22 @@ final class MeetingController: ObservableObject {
     private var system: SystemAudioCapture?
     private var folder: URL?
     private var info: MeetingInfo?
-    private var startedAt: Date?
+    /// Monotonic start (system uptime), for the timer and the length limit.
+    private var startUptime: TimeInterval = 0
     private var limit = MeetingLimit(minutes: MeetingLimit.defaultMinutes)
     private var timer: Timer?
     private var ticks = 0
+    /// Between the first check and the recording actually starting (the consent alert is modal).
+    private var starting = false
     private var diskWarned = false
     private var micSilentWarned = false
+    private var stalled: [MeetingChannel: TimeInterval] = [:]
+    private var recoveryTried = Set<String>()
+    private var quitWaiters: [() -> Void] = []
     private var sleepObserver: NSObjectProtocol?
+
+    /// No buffers at all from a channel for this long: the device is gone or stuck.
+    static let stallSeconds = 5.0
 
     var isActive: Bool { phase != .idle }
     var isRecording: Bool { phase == .recording }
@@ -178,7 +194,7 @@ final class MeetingController: ObservableObject {
     // MARK: start
 
     func start() {
-        guard phase == .idle else { return }
+        guard phase == .idle, !starting else { return }
         guard let spec = AppSettings.meetingSpec(models), let vad = models.vadFile else {
             notice(.init(text: "Meetings need the Whisper speech model", action: "Fix", run: onNeedsSetup))
             return
@@ -193,59 +209,56 @@ final class MeetingController: ObservableObject {
             notice(.init(text: "Microphone is blocked for VoiceType", action: "Fix", run: onNeedsSetup))
             return
         }
-        let free = (try? store.root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage ?? .max
-        guard DiskSpace.level(freeBytes: free) != .critical else {
+        guard DiskSpace.level(freeBytes: freeBytes) != .critical else {
             notice(.init(text: "Not enough disk space to record a meeting", seconds: 6))
             return
         }
-        guard confirmConsentOnce() else { return }
+        starting = true
+        defer { starting = false }
+        // A second ⌃⌥R while this alert is up must not start a second meeting (`starting` above).
+        guard confirmConsentOnce(), phase == .idle else { return }
 
         let start = Date()
         var info = MeetingInfo(title: "Meeting", startedAt: start)
         info.languageSetting = UserDefaults.standard.string(forKey: Key.language) ?? "en"
         info.model = Self.modelName(spec, models)
         info.audioKept = UserDefaults.standard.bool(forKey: Key.meetingKeepAudio)
-        var created: URL?
+        let folder: URL
+        let pipeline: MeetingPipeline
         do {
-            let folder = try store.create(start: start, title: info.title)
-            created = folder
-            try MeetingFiles.writeInfo(info, to: folder)
-            let pipeline = try MeetingPipeline(config: config(folder, spec, vad), speech: speech, startHostTime: AudioGetCurrentHostTime())
-            wire(pipeline)
-            let mic = MicCapture()
-            mic.onAudio = { [weak pipeline] s, peak, host in pipeline?.append(.me, s, peak: peak, hostTime: host) }
-            mic.onSwitch = { [weak self] name in DispatchQueue.main.async { self?.notice(.init(text: "Recording from \(name)", seconds: 3)) } }
-            try mic.start()
-            let system = SystemAudioCapture()
-            system.onAudio = { [weak pipeline] s, peak, host in pipeline?.append(.others, s, peak: peak, hostTime: host) }
+            folder = try store.create(start: start, title: info.title)
             do {
-                try system.start()
-                systemAudio = .unknown
-                self.system = system
+                try MeetingFiles.writeInfo(info, to: folder)
+                pipeline = try MeetingPipeline(config: config(folder, spec, vad), speech: speech, startHostTime: AudioGetCurrentHostTime())
             } catch {
-                NSLog("VoiceType meeting: no system audio: %@", error.localizedDescription)
-                systemAudio = .unavailable
-                notice(.init(text: "Recording your mic only", action: "Turn on", run: SystemAudioPermission.openSettings, seconds: 8))
+                try? FileManager.default.removeItem(at: folder)
+                throw error
             }
-            self.mic = mic
-            self.pipeline = pipeline
-            self.folder = folder
-            self.info = info
         } catch {
-            if let created { try? FileManager.default.removeItem(at: created) }
             notice(.init(text: "Couldn’t start recording: \(error.localizedDescription)", seconds: 6))
             return
         }
+        wire(pipeline)
+        let mic = MicCapture(), system = SystemAudioCapture()
+        wire(mic, .me, pipeline)
+        wire(system, .others, pipeline)
+        self.mic = mic
+        self.system = system
+        self.pipeline = pipeline
+        self.folder = folder
+        self.info = info
 
-        startedAt = start
+        startUptime = ProcessInfo.processInfo.systemUptime
         elapsed = 0
         words = 0
         title = info.title
         ticks = 0
         diskWarned = false
         micSilentWarned = false
+        stalled = [:]
+        systemAudio = .unknown
         limit = MeetingLimit(minutes: UserDefaults.standard.integer(forKey: Key.meetingMaxMinutes))
-        currentID = folder?.lastPathComponent
+        currentID = folder.lastPathComponent
         speech.hold(true)
         speech.warmUp(spec)
         MeetingNotifier.requestAuthorization()
@@ -254,6 +267,25 @@ final class MeetingController: ObservableObject {
         timer = t
         store.refresh()
         setPhase(.recording)
+
+        // Opening devices can take a second or two (Bluetooth): off the main thread.
+        mic.start { [weak self] error in
+            guard let self, let error, self.mic === mic else { return }
+            self.abort("Couldn’t use the microphone: \(error.localizedDescription)")
+        }
+        system.start { [weak self] error in
+            guard let self, let error, self.system === system else { return }
+            NSLog("VoiceType meeting: no system audio: %@", error.localizedDescription)
+            system.stop()
+            self.system = nil
+            self.systemAudio = .unavailable
+            self.notice(.init(text: "Recording your mic only", action: "Turn on", run: SystemAudioPermission.openSettings, seconds: 8))
+            self.onTick?()
+        }
+    }
+
+    private var freeBytes: Int64 {
+        (try? store.root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage ?? .max
     }
 
     private func config(_ folder: URL, _ spec: EngineSpec, _ vad: URL) -> MeetingPipeline.Config {
@@ -274,6 +306,30 @@ final class MeetingController: ObservableObject {
         p.onLevel = { [weak self] ch, level in DispatchQueue.main.async { self?.onLevel?(ch, level) } }
         p.onWords = { [weak self] n in DispatchQueue.main.async { self?.words = n } }
         p.onSilence = { [weak self] ch, state in DispatchQueue.main.async { self?.silence(ch, state) } }
+        p.onWriteFailure = { [weak self] _, why in
+            DispatchQueue.main.async {
+                guard let self, self.phase == .recording else { return }
+                self.notice(.init(text: "Couldn’t save the meeting audio (\(why)). Recording stopped", seconds: 10))
+                self.stop(.writeError)
+            }
+        }
+    }
+
+    private func wire(_ c: ChannelCapture, _ ch: MeetingChannel, _ p: MeetingPipeline) {
+        c.onAudio = { [weak p] a in p?.append(ch, a.samples, peak: a.peak, hostTime: a.hostTime, first: a.first) }
+        c.onTrouble = { [weak self] why in
+            guard let self, self.phase == .recording else { return }
+            NSLog("VoiceType meeting: %@ trouble: %@", ch.rawValue, why)
+            self.notice(.init(text: ch == .me ? "Microphone disconnected: reconnecting…" : "Lost other apps’ sound: reconnecting…", seconds: 6))
+        }
+        c.onSwitched = { [weak self] name, afterTrouble in
+            guard let self, self.phase == .recording else { return }
+            if ch == .me {
+                self.notice(.init(text: afterTrouble ? "Microphone is back: \(name)" : "Recording from \(name)", seconds: 3))
+            } else if afterTrouble {
+                self.notice(.init(text: "Other apps’ sound is back", seconds: 3))
+            }
+        }
     }
 
     /// Only digital silence from a channel. For system audio that usually means System Audio
@@ -310,11 +366,32 @@ final class MeetingController: ObservableObject {
         return true
     }
 
+    /// The microphone couldn't be opened at all: nothing to save.
+    private func abort(_ why: String) {
+        guard phase == .recording else { return }
+        timer?.invalidate()
+        timer = nil
+        mic?.stop()
+        system?.stop()
+        mic = nil
+        system = nil
+        pipeline?.finish { _ in } // seals and closes the files
+        pipeline = nil
+        if let folder { try? FileManager.default.removeItem(at: folder) }
+        folder = nil
+        info = nil
+        currentID = nil
+        speech.hold(false)
+        store.refresh()
+        setPhase(.idle)
+        notice(.init(text: why, action: "Fix", run: onNeedsSetup, seconds: 8))
+    }
+
     // MARK: while recording
 
     private func tick() {
-        guard phase == .recording, let startedAt else { return }
-        elapsed = Int(Date().timeIntervalSince(startedAt))
+        guard phase == .recording else { return }
+        elapsed = Int(ProcessInfo.processInfo.systemUptime - startUptime)
         switch limit.check(elapsed: elapsed) {
         case .warn(let left)?:
             let text = "Meeting recording stops in \(left) min (the length limit)"
@@ -326,14 +403,39 @@ final class MeetingController: ObservableObject {
         case nil:
             break
         }
+        watchdog()
         ticks += 1
         if ticks % 30 == 0 { checkDisk(); saveProgress() }
         onTick?()
     }
 
+    /// A channel that delivers no buffers at all (not even silence) is stuck or gone: say so once,
+    /// and ask the capture to open again every few seconds until audio flows.
+    private func watchdog() {
+        let now = ProcessInfo.processInfo.systemUptime
+        for (ch, capture) in [(MeetingChannel.me, mic as ChannelCapture?), (.others, system)] {
+            guard let capture else { continue }
+            guard capture.clock.secondsSinceAudio > Self.stallSeconds else {
+                if stalled[ch] != nil {
+                    stalled[ch] = nil
+                    notice(.init(text: ch == .me ? "Microphone audio is back" : "Other apps’ sound is back", seconds: 3))
+                }
+                continue
+            }
+            if stalled[ch] == nil {
+                notice(.init(text: ch == .me ? "No audio from the microphone: reconnecting…" : "No audio from other apps: reconnecting…",
+                             action: ch == .me ? "Fix" : "Turn on", run: ch == .me ? onNeedsSetup : SystemAudioPermission.openSettings, seconds: 8))
+                if ch == .others, systemAudio != .ok { systemAudio = .silent }
+            }
+            if now - (stalled[ch] ?? 0) >= 10 {
+                stalled[ch] = now
+                capture.nudge()
+            }
+        }
+    }
+
     private func checkDisk() {
-        let free = (try? store.root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]))?.volumeAvailableCapacityForImportantUsage ?? .max
-        switch DiskSpace.level(freeBytes: free) {
+        switch DiskSpace.level(freeBytes: freeBytes) {
         case .critical:
             stop(.lowDisk)
             notice(.init(text: "Disk full: the meeting was stopped and saved", seconds: 8))
@@ -350,10 +452,12 @@ final class MeetingController: ObservableObject {
         guard var info, let folder else { return }
         info.durationSeconds = Double(elapsed)
         info.systemAudio = systemAudio
+        info.title = title
         self.info = info
         try? MeetingFiles.writeInfo(info, to: folder)
     }
 
+    /// While recording or wrapping up: the title goes to meeting.json now, the folder follows once finished.
     func rename(to newTitle: String) {
         guard isActive, let id = currentID, let entry = store.entry(id) else { return }
         if let e = store.rename(entry, to: newTitle, folderInUse: true) {
@@ -377,7 +481,7 @@ final class MeetingController: ObservableObject {
         info.stopReason = reason
         info.endedAt = stoppedAt
         info.systemAudio = systemAudio
-        if let t = store.entry(folder.lastPathComponent)?.info.title { info.title = t } // renamed while recording
+        info.title = title
         try? MeetingFiles.writeInfo(info, to: folder)
         self.info = info
         if systemAudio != .unknown { UserDefaults.standard.set(systemAudio.rawValue, forKey: Key.systemAudioState) }
@@ -385,6 +489,7 @@ final class MeetingController: ObservableObject {
         setPhase(.finishing)
         let echo = UserDefaults.standard.bool(forKey: Key.meetingEchoFilter)
         let keep = UserDefaults.standard.bool(forKey: Key.meetingKeepAudio)
+        // finish() seals the channels first, so audio still in flight from the captures is ignored.
         pipeline.finish { [weak self] outcome in
             let done = MeetingPipeline.write(outcome, info: info, folder: folder, echoFilter: echo, keepAudio: keep, stoppedAt: stoppedAt)
             DispatchQueue.main.async { self?.finished(done, folder: folder) }
@@ -399,33 +504,58 @@ final class MeetingController: ObservableObject {
         words = info.wordCount
         speech.hold(false)
         store.refresh()
+        // A title typed while it was wrapping up (meeting.json may have been written over), and a
+        // folder still named after the old title: both catch up now.
+        var entry = store.entry(folder.lastPathComponent)
+        if let e = entry { entry = store.rename(e, to: title, folderInUse: false) ?? e }
         setPhase(.idle)
-        if let entry = store.entry(folder.lastPathComponent) { onFinished?(entry) }
+        let waiters = quitWaiters
+        quitWaiters = []
+        waiters.forEach { $0() }
+        if let entry { onFinished?(entry) }
     }
 
-    /// The app is quitting: close the WAVs so nothing is lost. The next launch transcribes them.
-    func prepareForQuit() {
-        guard phase == .recording, let pipeline, var info, let folder else { return }
-        timer?.invalidate()
-        mic?.stop()
-        system?.stop()
-        pipeline.closeFiles()
-        info.status = .transcribing
-        info.stopReason = .quit
-        info.endedAt = Date()
-        info.systemAudio = systemAudio
-        try? MeetingFiles.writeInfo(info, to: folder)
+    /// The app wants to quit. A recording is stopped and saved as usual; while its transcript is
+    /// being finished, `done` runs when it is ready or after `timeout`, whichever is first (the next
+    /// launch finishes it otherwise). Returns false when there is nothing to wait for.
+    func prepareToQuit(timeout: TimeInterval = 15, _ done: @escaping () -> Void) -> Bool {
+        if phase == .recording { stop(.quit) }
+        guard phase == .finishing else { return false }
+        var called = false
+        let once = { if !called { called = true; done() } }
+        quitWaiters.append(once)
+        let t = Timer(timeInterval: timeout, repeats: false) { _ in once() }
+        RunLoop.main.add(t, forMode: .common)
+        return true
     }
 
     // MARK: recovery
 
     /// Meetings left "recording" or "transcribing" by a crash or quit: transcribe their WAVs now, one
-    /// at a time.
+    /// at a time. A meeting whose transcript was already complete is just marked ready. Each meeting
+    /// is tried once per launch, so one that can't be saved can't loop.
     func recoverInterrupted() {
-        guard recoveryPipeline == nil, let spec = AppSettings.meetingSpec(models), let vad = models.vadFile else { return }
-        let pending = store.entries.filter { ($0.info.status == .recording || $0.info.status == .transcribing) && $0.id != currentID }
+        guard recoveryPipeline == nil else { return }
+        sweepLeftoverAudio()
+        let pending = store.entries.filter {
+            ($0.info.status == .recording || $0.info.status == .transcribing) && $0.id != currentID && !recoveryTried.contains($0.id)
+        }
         guard let entry = pending.first else { return }
+        recoveryTried.insert(entry.id)
         var info = entry.info
+        let keep = UserDefaults.standard.bool(forKey: Key.meetingKeepAudio)
+
+        // Killed after the transcript was written but before meeting.json said so.
+        if let segments = MeetingFiles.readTranscript(entry.folder) {
+            info.status = .ready
+            info.wordCount = MeetingTranscript.wordCount(segments)
+            info.audioKept = keep
+            if (try? MeetingFiles.writeInfo(info, to: entry.folder)) != nil, !keep { MeetingFiles.deleteAudio(entry.folder) }
+            store.refresh()
+            recoverInterrupted()
+            return
+        }
+        guard let spec = AppSettings.meetingSpec(models), let vad = models.vadFile else { return } // next launch, with a model
         guard !MeetingFiles.audioFiles(entry.folder).isEmpty else {
             info.status = .failed
             info.error = "The recording’s audio files are missing."
@@ -441,15 +571,16 @@ final class MeetingController: ObservableObject {
         do {
             let p = try MeetingPipeline(config: config(entry.folder, spec, vad), speech: speech, startHostTime: nil, writeAudio: false)
             recoveryPipeline = p
+            recoveringID = entry.id
             p.ingestRecordedAudio()
             let echo = UserDefaults.standard.bool(forKey: Key.meetingEchoFilter)
-            let keep = UserDefaults.standard.bool(forKey: Key.meetingKeepAudio)
             let base = info
             p.finish { [weak self] outcome in
                 MeetingPipeline.write(outcome, info: base, folder: entry.folder, echoFilter: echo, keepAudio: keep, stoppedAt: nil)
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.recoveryPipeline = nil
+                    self.recoveringID = nil
                     self.store.refresh()
                     if let e = self.store.entry(entry.id) { self.onRecovered?(e) }
                     self.recoverInterrupted()
@@ -460,6 +591,13 @@ final class MeetingController: ObservableObject {
             info.error = error.localizedDescription
             try? MeetingFiles.writeInfo(info, to: entry.folder)
             store.refresh()
+        }
+    }
+
+    /// A ready meeting whose audio should be gone but isn't (quit between saving and deleting).
+    private func sweepLeftoverAudio() {
+        for e in store.entries where e.info.status == .ready && !e.info.audioKept && e.id != currentID {
+            MeetingFiles.deleteAudio(e.folder)
         }
     }
 

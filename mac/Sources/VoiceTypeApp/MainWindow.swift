@@ -865,6 +865,7 @@ struct SettingsPane: View {
         .onChange(of: trigger) { _ in app.applyTrigger(); model.refresh += 1 }
         .onChange(of: handsFreeShortcut) { _ in app.applyTrigger() }
         .onChange(of: meetingShortcut) { app.applyTrigger() }
+        .onChange(of: meetingHideFromCapture) { app.applyCaptureHiding() }
         .onChange(of: language) { _ in app.dictation.warmUp(); model.refresh += 1 }
         .onChange(of: translate) { _ in app.dictation.warmUp() }
         .onChange(of: engine) { _ in model.refresh += 1 }
@@ -894,7 +895,7 @@ struct SettingsPane: View {
             Toggle(isOn: $meetingHideFromCapture) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Hide from screen sharing while recording")
-                    Text("The flow bar and VoiceType’s windows don’t appear in screen shares or screen recordings.")
+                    Text("Asks macOS to leave the flow bar and VoiceType’s windows out of screen shares and recordings. Check with your meeting app: not every capture method honours it.")
                         .font(.caption).foregroundColor(.secondary)
                 }
             }
@@ -957,7 +958,7 @@ struct SettingsPane: View {
         }
         Section("Debug") {
             Toggle("Keep recordings", isOn: $keepRecordings)
-            Text("Loaded: \(app.speech.loadedSpec.map { "\($0.kind.rawValue) \($0.language.isEmpty ? "auto" : $0.language)" } ?? "none") · \(EngineSpec(kind: .fastEnglish, language: "en").threads) threads · AI polish: \(app.polisher.statusText)")
+            Text("Loaded: \(app.speech.loadedName ?? "none")\(app.speech.lastLanguage.map { " · last decode: \($0.isEmpty ? "auto" : $0)" } ?? "") · \(EngineSpec(kind: .fastEnglish, language: "en").threads) threads · AI polish: \(app.polisher.statusText)")
                 .font(.caption)
             ForEach(PerfLog.shared.recent.prefix(8)) { e in
                 Text("\(e.date.formatted(date: .omitted, time: .standard))  \(e.engine)  audio \(e.audioMillis) ms  decode \(e.decodeMillis) ms  RTF \(String(format: "%.3f", e.rtf))\(e.polishMillis >= 0 ? "  polish \(e.polishMillis) ms" : "")\(e.polishNote.map { "  [\($0)]" } ?? "")")

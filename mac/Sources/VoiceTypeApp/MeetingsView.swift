@@ -70,7 +70,7 @@ struct MeetingsView: View {
 
     @ViewBuilder private func menu(_ e: MeetingStore.Entry) -> some View {
         Button("Open") { open(e) }
-        if e.info.status == .ready {
+        if e.info.status.hasTranscript {
             Button("Copy transcript") { MeetingActions.copy(MeetingRender.plain(e.info, lines: store.lines(e))) }
             Button("Copy for AI") { MeetingActions.copy(MeetingRender.forAI(e.info, lines: store.lines(e))) }
         }
@@ -111,7 +111,7 @@ private struct RecordCard: View {
                             .font(.system(size: 13)).foregroundColor(.secondary)
                     }
                     Spacer(minLength: 8)
-                    Button("Stop") { meetings.stop() }.keyboardShortcut(.defaultAction)
+                    Button("Stop") { meetings.stop() } // no default-button shortcut: Return in a text field must not end the meeting
                 case .finishing:
                     ProgressView().controlSize(.small)
                     VStack(alignment: .leading, spacing: 3) {
@@ -173,6 +173,7 @@ struct StatusChip: View {
             case .recording: return ("Recording", .red)
             case .transcribing: return ("Transcribing", .orange)
             case .ready: return ("Ready", .green)
+            case .partial: return ("Partial", .orange)
             case .failed: return ("Failed", .red)
             }
         }()
@@ -195,7 +196,7 @@ private struct MeetingDetailView: View {
 
     var body: some View {
         let info = entry.info
-        let lines = info.status == .ready ? store.lines(entry) : []
+        let lines = info.status.hasTranscript ? store.lines(entry) : []
         let matches = Self.matches(lines, model.meetingFind)
         let current = matches.isEmpty ? nil : matches[((model.meetingFindIndex % matches.count) + matches.count) % matches.count]
         VStack(alignment: .leading, spacing: 12) {
@@ -212,17 +213,22 @@ private struct MeetingDetailView: View {
             Text(facts(info)).font(.system(size: 12)).foregroundColor(.secondary)
             HStack(spacing: 8) {
                 Button("Copy transcript") { MeetingActions.copy(MeetingRender.plain(currentInfo, lines: lines)) }
-                    .disabled(info.status != .ready)
+                    .disabled(!info.status.hasTranscript)
                 Button("Copy for AI") { MeetingActions.copy(MeetingRender.forAI(currentInfo, lines: lines)) }
-                    .disabled(info.status != .ready)
+                    .disabled(!info.status.hasTranscript)
                     .help("The transcript with instructions for Claude or Codex: summary, decisions, action items, open questions, with timestamps")
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([entry.folder.appendingPathComponent(MeetingFiles.transcriptMarkdown)]) }
                 Spacer()
+                // Anything but the meeting being recorded or transcribed right now (a crashed one can go).
                 Button("Delete…", role: .destructive) { model.confirmDeleteMeeting = true }
-                    .disabled(info.status == .recording || info.status == .transcribing)
+                    .disabled(isCurrent || entry.id == meetings.recoveringID)
             }
             .controlSize(.small)
-            if info.status == .ready, !lines.isEmpty { findBar(matches.count, current: current.flatMap { matches.firstIndex(of: $0) }) }
+            if info.status == .partial, let error = info.error {
+                Label("\(error). The audio is kept in the meeting folder.", systemImage: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12)).foregroundColor(.orange).fixedSize(horizontal: false, vertical: true)
+            }
+            if info.status.hasTranscript, !lines.isEmpty { findBar(matches.count, current: current.flatMap { matches.firstIndex(of: $0) }) }
             Divider()
             content(info, lines, matches: Set(matches), current: current)
         }
@@ -250,7 +256,7 @@ private struct MeetingDetailView: View {
             meetings.rename(to: model.meetingTitleDraft)
             return
         }
-        let inUse = entry.info.status == .recording || entry.info.status == .transcribing
+        let inUse = entry.id == meetings.recoveringID
         if let e = store.rename(entry, to: model.meetingTitleDraft, folderInUse: inUse) { model.openMeeting = e.id }
     }
 
@@ -298,14 +304,18 @@ private struct MeetingDetailView: View {
         case .recording where isCurrent:
             placeholder("Recording", "The transcript is being written as you talk and is ready a few seconds after you stop.")
         case .recording, .transcribing:
-            VStack(spacing: 10) {
-                ProgressView().controlSize(.small)
-                Text("Transcribing…").font(.system(size: 13)).foregroundColor(.secondary)
+            if isCurrent || entry.id == meetings.recoveringID {
+                VStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Transcribing…").font(.system(size: 13)).foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                placeholder("Interrupted", "This recording was cut off (the app quit or crashed). VoiceType transcribes it at the next launch when the speech model is available.")
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .failed:
             placeholder("Transcription failed", (info.error ?? "Unknown error.") + (info.audioKept ? " The audio is still in the meeting folder." : ""))
-        case .ready:
+        case .ready, .partial:
             if lines.isEmpty {
                 placeholder("No speech", "Nothing was transcribed in this recording.")
             } else {

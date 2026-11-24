@@ -104,64 +104,97 @@ public enum MeetingTranscript {
 }
 
 /// Without headphones the mic also hears the other people, so their words come out twice: once as
-/// Others (the clean system audio) and once, fainter, as Me. Drops a Me segment whose words closely
-/// match what Others said at the same time. Deliberately conservative: a Me segment that mixes real
-/// speech with echo is kept.
+/// Others (the clean system audio) and once, fainter, as Me. Drops a Me segment whose words are, for
+/// the most part, a contiguous copy of what Others said *during that segment*. Deliberately
+/// conservative: people answer with the same common words all the time ("I think we can do that"
+/// during a long Others turn), so only runs of 3 words in a row count, only the Others words spoken
+/// inside the Me segment's own time span are looked at, and short lines need an exact match. A Me
+/// segment that mixes real speech with echo is kept.
 public enum EchoFilter {
-    /// How far apart in time the two may be (seconds): segment edges from two channels never line up exactly.
+    /// Seconds around the Me segment in which Others' words count (segment edges from two channels
+    /// and the word times estimated inside a segment are both approximate).
     public static let slack = 1.5
-    /// Share of the Me segment's words that must appear, in order, in the overlapping Others text.
-    public static let threshold = 0.7
+    /// Words in a row that must match.
+    public static let run = 3
+    /// Share of the Me segment's words that must sit inside such runs.
+    public static let threshold = 0.8
+    /// Shorter lines ("Okay.", "Yes, sure") are dropped only when an overlapping Others line is exactly the same.
+    public static let minWords = 4
 
-    public static func apply(_ segments: [TranscriptSegment], slack: Double = slack, threshold: Double = threshold) -> (segments: [TranscriptSegment], removed: Int) {
-        let others = segments.filter { $0.channel == .others }
+    public static func apply(_ segments: [TranscriptSegment], slack: Double = slack) -> (segments: [TranscriptSegment], removed: Int) {
+        let others = segments.filter { $0.channel == .others }.sorted { $0.start < $1.start }
         guard !others.isEmpty else { return (segments, 0) }
         var removed = 0
         let kept = segments.filter { s in
             guard s.channel == .me else { return true }
-            let overlapping = others.filter { $0.start < s.end + slack && $0.end > s.start - slack }
-            guard !overlapping.isEmpty,
-                  isEcho(s.text, of: overlapping.map(\.text).joined(separator: " "), threshold: threshold) else { return true }
+            let window = (s.start - slack)...(s.end + slack)
+            let overlapping = others.filter { $0.start <= window.upperBound && $0.end >= window.lowerBound }
+            guard !overlapping.isEmpty else { return true }
+            let heard = overlapping.flatMap { wordsSpoken(in: $0, within: window) }
+            guard isEcho(words(s.text), heard: heard, lines: overlapping.map { words($0.text) }) else { return true }
             removed += 1
             return false
         }
         return (kept, removed)
     }
 
-    /// True when `mine` reads as an echo of `theirs`. One or two words ("Okay.", "Yes, sure") only on
-    /// an exact match: people really do say those while the others talk.
-    public static func isEcho(_ mine: String, of theirs: String, threshold: Double = threshold) -> Bool {
-        let a = words(mine), b = words(theirs)
-        guard !a.isEmpty, !b.isEmpty else { return false }
-        if a.count < 3 { return a == b }
-        return Double(commonSubsequence(a, b)) / Double(a.count) >= threshold
+    /// The words of `seg` said within `window`, placing its words evenly over the segment (Whisper
+    /// gives times per segment, not per word). Joined in time order with the neighbouring segments,
+    /// an echo that crosses a segment boundary still matches.
+    static func wordsSpoken(in seg: TranscriptSegment, within window: ClosedRange<Double>) -> [String] {
+        let w = words(seg.text)
+        let span = max(seg.end - seg.start, 0)
+        return w.enumerated().filter { i, _ in window.contains(seg.start + (Double(i) + 0.5) / Double(w.count) * span) }.map(\.element)
+    }
+
+    /// `mine`: the Me segment's words. `heard`: what Others said meanwhile. `lines`: the whole
+    /// overlapping Others lines (for the exact match of a short line).
+    static func isEcho(_ mine: [String], heard: [String], lines: [[String]]) -> Bool {
+        guard !mine.isEmpty else { return false }
+        if mine.count < minWords { return lines.contains(mine) }
+        guard heard.count >= run else { return false }
+        let runs = Set((0...(heard.count - run)).map { heard[$0..<($0 + run)].joined(separator: " ") })
+        var covered = [Bool](repeating: false, count: mine.count)
+        for i in 0...(mine.count - run) where runs.contains(mine[i..<(i + run)].joined(separator: " ")) {
+            for k in i..<(i + run) { covered[k] = true }
+        }
+        return Double(covered.filter { $0 }.count) / Double(mine.count) >= threshold
+    }
+
+    /// Convenience for tests and callers with plain text: `theirs` is taken as said during `mine`.
+    public static func isEcho(_ mine: String, of theirs: String) -> Bool {
+        isEcho(words(mine), heard: words(theirs), lines: [words(theirs)])
     }
 
     static func words(_ text: String) -> [String] {
         let lowered = text.lowercased().replacingOccurrences(of: "’", with: "'")
         return lowered.split { !($0.isLetter || $0.isNumber || $0 == "'") }.map(String.init)
     }
-
-    /// Length of the longest common subsequence of two word lists.
-    static func commonSubsequence(_ a: [String], _ b: [String]) -> Int {
-        var prev = [Int](repeating: 0, count: b.count + 1), cur = prev
-        for x in a {
-            for (j, y) in b.enumerated() { cur[j + 1] = x == y ? prev[j] + 1 : max(prev[j + 1], cur[j]) }
-            swap(&prev, &cur)
-        }
-        return prev[b.count]
-    }
 }
 
 /// Whisper output for one meeting chunk -> what is kept. Dictation's filter judges a whole recording;
 /// a meeting needs the same judgement per chunk, or the near-silence phrases never get caught.
 public enum MeetingTextFilter {
-    /// `speechMillis`: speech the VAD found in the chunk. `previous`: the text kept from the previous
-    /// chunk of the same channel.
-    public static func clean(_ segments: [TimedText], speechMillis: Int, previous: String?) -> [TimedText] {
+    /// What the previous chunk of a channel said (after filtering) and when it ended.
+    public struct Previous: Equatable, Sendable {
+        public var text: String
+        public var end: Double
+        public init(text: String, end: Double) { self.text = text; self.end = end }
+    }
+
+    /// A chunk repeating the one right before it (within this many seconds) is a decoder loop.
+    public static let repeatWindow = 15.0
+    /// ...when it is at least this long: "Okay." twice is normal conversation.
+    public static let repeatMinWords = 3
+
+    /// `speechMillis`: speech the VAD found in the chunk, which spans `start`...`end` seconds of the
+    /// meeting. `previous`: the channel's previous chunk. Returns what is kept, and what to pass as
+    /// `previous` for the next chunk of this channel.
+    public static func clean(_ segments: [TimedText], speechMillis: Int, previous: Previous?, start: Double, end: Double)
+        -> (kept: [TimedText], previous: Previous) {
         // The classic near-silence inventions ("Thank you.", "you") on a chunk with little speech.
         let joined = segments.map(\.text).joined(separator: " ")
-        guard !HallucinationFilter.clean(joined, speechMillis: speechMillis).isEmpty else { return [] }
+        guard !HallucinationFilter.clean(joined, speechMillis: speechMillis).isEmpty else { return ([], Previous(text: "", end: end)) }
         var out: [TimedText] = []
         for s in segments {
             let t = HallucinationFilter.clean(s.text, speechMillis: .max) // tags and decoder loops only
@@ -172,10 +205,15 @@ public enum MeetingTextFilter {
             }
             out.append(TimedText(text: t, start: s.start, end: s.end))
         }
-        // A chunk that only repeats the previous one word for word is Whisper looping over noise or
-        // hold music, not someone saying the same thing again a few seconds later.
-        if let previous, !out.isEmpty, key(out.map(\.text).joined(separator: " ")) == key(previous) { return [] }
-        return out
+        let text = out.map(\.text).joined(separator: " ")
+        let next = Previous(text: text, end: end)
+        // A chunk that only repeats the one just before it is Whisper looping over noise or hold
+        // music, not someone saying the same thing again (that would be minutes apart, or short).
+        if let previous, !out.isEmpty, start - previous.end <= repeatWindow,
+           EchoFilter.words(text).count >= repeatMinWords, key(text) == key(previous.text) {
+            return ([], next)
+        }
+        return (out, next)
     }
 
     static func key(_ text: String) -> String { EchoFilter.words(text).joined(separator: " ") }

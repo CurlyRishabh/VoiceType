@@ -91,10 +91,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
-    /// Quitting mid-meeting keeps the audio (it is on disk already); the next launch transcribes it.
+    /// Quitting mid-meeting stops and saves it, and waits (up to 15 s) for the transcript to finish.
+    /// If it takes longer, the audio is on disk and the next launch transcribes it.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        meetings.prepareForQuit()
-        return .terminateNow
+        let wait = meetings.prepareToQuit { NSApp.reply(toApplicationShouldTerminate: true) }
+        return wait ? .terminateLater : .terminateNow
     }
 
     // MARK: trigger key -> gesture -> dictation
@@ -176,11 +177,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
 
     private func meetingPhase(_ p: MeetingController.Phase) {
         refreshIcon()
-        captureHidden = p != .idle && UserDefaults.standard.bool(forKey: Key.meetingHideFromCapture)
-        flowBar.hideFromCapture(captureHidden)
-        for w in [mainWindow, settingsWindow] { w?.sharingType = captureHidden ? .none : .readOnly }
+        applyCaptureHiding()
         if p == .idle { flowBar.setMeeting(nil) } else { updateMeetingBar() }
         mainModel.refresh += 1
+    }
+
+    /// While a meeting records (and the setting is on), the flow bar and every VoiceType window ask
+    /// macOS to be left out of screen shares and recordings. Also called when the setting changes.
+    func applyCaptureHiding() {
+        captureHidden = meetings.isActive && UserDefaults.standard.bool(forKey: Key.meetingHideFromCapture)
+        flowBar.hideFromCapture(captureHidden)
+        for w in NSApp.windows { w.sharingType = captureHidden ? .none : .readOnly }
     }
 
     private func updateMeetingBar() {
@@ -204,11 +211,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private func meetingFinished(_ e: MeetingStore.Entry) {
         mainModel.refresh += 1
         let info = e.info
+        if info.status == .partial {
+            meetingNotice(.init(text: "Transcript ready, but parts couldn’t be transcribed (audio kept)", action: "Open",
+                                run: { [weak self] in self?.showMeeting(e.id) }, seconds: 10))
+            return
+        }
         if info.status == .failed {
             meetingNotice(.init(text: "The meeting transcript failed", action: "Open", run: { [weak self] in self?.showMeeting(e.id) }, seconds: 8))
             return
         }
-        if MeetingLimit.looksAccidental(words: info.wordCount) {
+        if MeetingLimit.looksAccidental(words: info.wordCount, seconds: info.durationSeconds) {
             meetingNotice(.init(text: "Started by mistake? Only \(info.wordCount) words", action: "Discard", run: { [weak self] in
                 guard let self else { return }
                 if self.mainModel.openMeeting == e.id { self.mainModel.openMeeting = nil }
@@ -505,6 +517,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             onboardingWindow = w
         }
         onboardingModel.refresh += 1
+        onboardingWindow?.sharingType = captureHidden ? .none : .readOnly
         NSApp.activate(ignoringOtherApps: true)
         onboardingWindow?.makeKeyAndOrderFront(nil)
     }
@@ -529,6 +542,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             w.center()
             licensesWindow = w
         }
+        licensesWindow?.sharingType = captureHidden ? .none : .readOnly
         NSApp.activate(ignoringOtherApps: true)
         licensesWindow?.makeKeyAndOrderFront(nil)
     }
