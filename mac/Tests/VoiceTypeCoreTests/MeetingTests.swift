@@ -151,6 +151,21 @@ private func seg(_ start: Double, _ end: Double, _ ch: MeetingChannel, _ text: S
         #expect(removed == 1 && kept.count == 3)
     }
 
+    /// With headphones (no echo at all), people mirror short lines: "Good morning." – "Good morning."
+    /// A reply comes after the other line, an echo with it: only the echo goes.
+    @Test(arguments: ["Hello?", "Good morning.", "Thank you.", "Bye.", "Okay.", "Thanks, bye.", "Yes.", "Happy new year!"])
+    func mirroredShortRepliesStay(_ line: String) {
+        let d = Double(line.split(separator: " ").count) / 2.6
+        for gap in [0.0, 0.3, 0.6, 1.0, 1.4] {
+            let others = seg(10, 10 + d, .others, line)
+            let reply = seg(10 + d + gap, 10 + 2 * d + gap, .me, line)
+            #expect(EchoFilter.apply([others, reply]).removed == 0, "dropped “\(line)” \(gap) s after")
+        }
+        // The same words at the same moment in the mic are the echo.
+        let echo = seg(10.05, 10 + d + 0.05, .me, line)
+        #expect(EchoFilter.apply([seg(10, 10 + d, .others, line), echo]).removed == 1)
+    }
+
     @Test func wordTimesInsideASegment() {
         let s = seg(0, 10, .others, "one two three four five six seven eight nine ten")
         #expect(EchoFilter.wordsSpoken(in: s, within: 2...4.9) == ["three", "four", "five"])
@@ -355,6 +370,26 @@ private func seg(_ start: Double, _ end: Double, _ ch: MeetingChannel, _ text: S
         #expect(MeetingFiles.readTranscript(dir) == []) // written, even if nobody spoke
         try Data("{".utf8).write(to: dir.appendingPathComponent("transcript.json"))
         #expect(MeetingFiles.readTranscript(dir) == nil)
+    }
+
+    @Test func recoveredInfoFollowsTheSavedStatus() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let base = MeetingInfo(title: "X", startedAt: Date(), status: .transcribing)
+        #expect(MeetingFiles.recoveredInfo(base, folder: dir, keepAudio: false) == nil)
+        for (saved, expected, kept) in [(MeetingInfo.Status.ready, MeetingInfo.Status.ready, false), (.partial, .partial, true), (.failed, .failed, true)] {
+            var i = base
+            i.status = saved
+            try MeetingFiles.writeTranscript([seg(0, 1, .me, "one two three")], info: i, to: dir)
+            let r = try #require(MeetingFiles.recoveredInfo(base, folder: dir, keepAudio: false))
+            #expect(r.info.status == expected && r.info.audioKept == kept && r.info.wordCount == 3)
+        }
+        // A file without a status (or an odd one) is not trusted with the audio.
+        let file = MeetingFiles.TranscriptFile(status: nil, segments: [seg(0, 1, .me, "hi")])
+        try JSONEncoder().encode(file).write(to: dir.appendingPathComponent("transcript.json"))
+        let r = try #require(MeetingFiles.recoveredInfo(base, folder: dir, keepAudio: false))
+        #expect(r.info.status == .partial && r.info.audioKept)
+        #expect(MeetingFiles.readTranscriptFile(dir)?.status == nil)
     }
 
     @Test func audioFilesAndDelete() throws {

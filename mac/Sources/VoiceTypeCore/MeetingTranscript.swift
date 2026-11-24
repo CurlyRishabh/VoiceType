@@ -118,7 +118,9 @@ public enum EchoFilter {
     public static let run = 3
     /// Share of the Me segment's words that must sit inside such runs.
     public static let threshold = 0.8
-    /// Shorter lines ("Okay.", "Yes, sure") are dropped only when an overlapping Others line is exactly the same.
+    /// Shorter lines ("Okay.", "Yes, sure") are dropped only when an Others line that overlaps them
+    /// in time (no slack: an echo is simultaneous, a reply such as "Good morning." comes after) says
+    /// exactly the same.
     public static let minWords = 4
 
     public static func apply(_ segments: [TranscriptSegment], slack: Double = slack) -> (segments: [TranscriptSegment], removed: Int) {
@@ -131,7 +133,8 @@ public enum EchoFilter {
             let overlapping = others.filter { $0.start <= window.upperBound && $0.end >= window.lowerBound }
             guard !overlapping.isEmpty else { return true }
             let heard = overlapping.flatMap { wordsSpoken(in: $0, within: window) }
-            guard isEcho(words(s.text), heard: heard, lines: overlapping.map { words($0.text) }) else { return true }
+            let simultaneous = overlapping.filter { $0.start < s.end && $0.end > s.start }
+            guard isEcho(words(s.text), heard: heard, lines: simultaneous.map { words($0.text) }) else { return true }
             removed += 1
             return false
         }
@@ -147,8 +150,8 @@ public enum EchoFilter {
         return w.enumerated().filter { i, _ in window.contains(seg.start + (Double(i) + 0.5) / Double(w.count) * span) }.map(\.element)
     }
 
-    /// `mine`: the Me segment's words. `heard`: what Others said meanwhile. `lines`: the whole
-    /// overlapping Others lines (for the exact match of a short line).
+    /// `mine`: the Me segment's words. `heard`: what Others said meanwhile. `lines`: the whole Others
+    /// lines that overlap the Me segment itself (for the exact match of a short line).
     static func isEcho(_ mine: [String], heard: [String], lines: [[String]]) -> Bool {
         guard !mine.isEmpty else { return false }
         if mine.count < minWords { return lines.contains(mine) }

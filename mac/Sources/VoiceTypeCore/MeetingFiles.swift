@@ -247,14 +247,23 @@ public enum MeetingFiles {
         (try? Data(contentsOf: folder.appendingPathComponent(infoFile))).flatMap { try? decoder.decode(MeetingInfo.self, from: $0) }
     }
 
-    struct TranscriptFile: Codable {
-        var version = 1
-        var segments: [TranscriptSegment]
+    /// transcript.json. `status` says whether every part was transcribed (ready) or not (partial,
+    /// failed), so a meeting recovered from this file alone knows whether its audio may go.
+    public struct TranscriptFile: Codable, Equatable, Sendable {
+        public var version = 1
+        public var status: MeetingInfo.Status?
+        public var segments: [TranscriptSegment]
+
+        public init(status: MeetingInfo.Status?, segments: [TranscriptSegment]) {
+            self.status = status
+            self.segments = segments
+        }
     }
 
-    /// transcript.json (the segments) and transcript.md (rendered from them).
+    /// transcript.json (the segments and the status) and transcript.md (rendered from them).
     public static func writeTranscript(_ segments: [TranscriptSegment], info: MeetingInfo, to folder: URL, timeZone: TimeZone = .current) throws {
-        try encoder.encode(TranscriptFile(segments: segments)).write(to: folder.appendingPathComponent(transcriptJSON), options: .atomic)
+        let file = TranscriptFile(status: info.status, segments: segments)
+        try encoder.encode(file).write(to: folder.appendingPathComponent(transcriptJSON), options: .atomic)
         try writeMarkdown(segments, info: info, to: folder, timeZone: timeZone)
     }
 
@@ -266,9 +275,23 @@ public enum MeetingFiles {
     public static func readSegments(_ folder: URL) -> [TranscriptSegment] { readTranscript(folder) ?? [] }
 
     /// nil when transcript.json is missing or unreadable (it is written in one go, so a readable one is complete).
-    public static func readTranscript(_ folder: URL) -> [TranscriptSegment]? {
-        (try? Data(contentsOf: folder.appendingPathComponent(transcriptJSON)))
-            .flatMap { try? decoder.decode(TranscriptFile.self, from: $0) }?.segments
+    public static func readTranscript(_ folder: URL) -> [TranscriptSegment]? { readTranscriptFile(folder)?.segments }
+
+    public static func readTranscriptFile(_ folder: URL) -> TranscriptFile? {
+        (try? Data(contentsOf: folder.appendingPathComponent(transcriptJSON))).flatMap { try? decoder.decode(TranscriptFile.self, from: $0) }
+    }
+
+    /// A meeting cut off after transcript.json was saved (but before meeting.json said so): its info
+    /// from that file. Ready only when the file says every part was transcribed; anything else, or a
+    /// file without a status, keeps the audio. nil when there is no readable transcript.
+    public static func recoveredInfo(_ base: MeetingInfo, folder: URL, keepAudio: Bool) -> (info: MeetingInfo, segments: [TranscriptSegment])? {
+        guard let file = readTranscriptFile(folder) else { return nil }
+        var info = base
+        info.status = file.status.flatMap { $0.hasTranscript || $0 == .failed ? $0 : nil } ?? .partial
+        if info.status == .partial && info.error == nil { info.error = "The app stopped while saving this transcript; some parts may be missing." }
+        info.wordCount = MeetingTranscript.wordCount(file.segments)
+        info.audioKept = info.status.keepsAudio(setting: keepAudio)
+        return (info, file.segments)
     }
 
     public static func audioFiles(_ folder: URL) -> [URL] {
