@@ -36,8 +36,18 @@ protocol SpeechRecognizing: AnyObject {
     var spec: EngineSpec { get }
     /// Short engine name for logs and the Debug tab.
     var name: String { get }
-    /// `prompt`: vocabulary hint (only whisper.cpp uses it).
-    func transcribe(_ samples: [Float], prompt: String?) -> String
+    /// True when the language is picked per call (whisper.cpp), so dictation and a meeting can use
+    /// different languages without reloading the model. sherpa-onnx fixes it when the model loads.
+    var languagePerCall: Bool { get }
+    /// `language`: "en", "hi" or "" (auto-detect). `prompt`: vocabulary hint (only whisper.cpp uses it).
+    func transcribe(_ samples: [Float], prompt: String?, language: String) -> String
+    /// The same, with times relative to the start of `samples`, and the language it was decoded in.
+    func transcribeTimed(_ samples: [Float], prompt: String?, language: String) -> (segments: [TimedText], language: String)
+}
+
+extension SpeechRecognizing {
+    /// In the language the model was loaded for.
+    func transcribe(_ samples: [Float], prompt: String?) -> String { transcribe(samples, prompt: prompt, language: spec.language) }
 }
 
 enum Recognizers {
@@ -108,7 +118,16 @@ final class SherpaRecognizer: SpeechRecognizing {
         recognizer = r
     }
 
-    func transcribe(_ samples: [Float], prompt: String?) -> String { transcribe(samples) }
+    var languagePerCall: Bool { false }
+
+    func transcribe(_ samples: [Float], prompt: String?, language: String) -> String { transcribe(samples) }
+
+    /// sherpa-onnx gives no times: the chunk is one segment.
+    func transcribeTimed(_ samples: [Float], prompt: String?, language: String) -> (segments: [TimedText], language: String) {
+        let text = transcribe(samples)
+        let seconds = Double(samples.count) / Double(sampleRate)
+        return (text.isEmpty ? [] : [TimedText(text: text, start: 0, end: seconds)], spec.language)
+    }
 
     func transcribe(_ samples: [Float]) -> String {
         guard !samples.isEmpty, let stream = SherpaOnnxCreateOfflineStream(recognizer) else { return "" }
