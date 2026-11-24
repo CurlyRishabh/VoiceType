@@ -123,19 +123,23 @@ final class SherpaRecognizer: SpeechRecognizing {
 
     func transcribe(_ samples: [Float], prompt: String?, language: String) -> String { transcribe(samples) }
 
-    /// sherpa-onnx gives no times: the chunk is one segment.
+    /// sherpa-onnx gives no times: the chunk is one segment. A decode that fails throws (a meeting
+    /// counts the chunk as missing); dictation's `transcribe` still types nothing, as before.
     func transcribeTimed(_ samples: [Float], prompt: String?, language: String) throws -> (segments: [TimedText], language: String) {
-        let text = transcribe(samples)
+        let text = try decode(samples)
         let seconds = Double(samples.count) / Double(sampleRate)
         return (text.isEmpty ? [] : [TimedText(text: text, start: 0, end: seconds)], spec.language)
     }
 
-    func transcribe(_ samples: [Float]) -> String {
-        guard !samples.isEmpty, let stream = SherpaOnnxCreateOfflineStream(recognizer) else { return "" }
+    func transcribe(_ samples: [Float]) -> String { (try? decode(samples)) ?? "" }
+
+    private func decode(_ samples: [Float]) throws -> String {
+        guard !samples.isEmpty else { return "" }
+        guard let stream = SherpaOnnxCreateOfflineStream(recognizer) else { throw EngineError("sherpa-onnx could not create a decoding stream.") }
         defer { SherpaOnnxDestroyOfflineStream(stream) }
         samples.withUnsafeBufferPointer { SherpaOnnxAcceptWaveformOffline(stream, Int32(sampleRate), $0.baseAddress, Int32($0.count)) }
         SherpaOnnxDecodeOfflineStream(recognizer, stream)
-        guard let result = SherpaOnnxGetOfflineStreamResult(stream) else { return "" }
+        guard let result = SherpaOnnxGetOfflineStreamResult(stream) else { throw EngineError("sherpa-onnx returned no result.") }
         defer { SherpaOnnxDestroyOfflineRecognizerResult(result) }
         return result.pointee.text.map { String(cString: $0) }?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
