@@ -98,8 +98,9 @@ afterwards.
   quit or crash is transcribed at the next launch.
 * **Devices come and go.** When the default mic or output changes (AirPods connect, a headset is
   unplugged) or a device changes its sample rate, the channel switches over; the new device is
-  opened before the old one is let go, and a failed switch is retried. A channel that delivers no
-  audio at all for 5 s gets a notice ("No audio from the microphone: reconnecting…").
+  opened before the old one is let go (it keeps recording until the new one delivers), and a
+  failed switch is retried. A channel that delivers no audio at all for 5 s gets one notice ("No
+  audio from the microphone: reconnecting…") and another only when audio really arrives again.
 * **Transcribed while you talk.** Each channel has its own voice detector; finished stretches of
   speech (up to 25 s) are decoded in the background, one at a time, so a dictation never waits for
   more than one of them. After *Stop* only the last few seconds are left ("Wrapping up…"):
@@ -117,8 +118,9 @@ afterwards.
   that only repeats the one before (hold music, noise), and near-silent chunks aren't decoded.
 * **Echo without headphones.** The mic also hears the others through the speakers. A Me line is
   dropped when at least 80 % of its words are runs of three or more words that the others said
-  *during that line* (short lines: only an exact copy). Replies that merely share common words with
-  a long turn ("I think we can do that") stay. Settings → Meetings → *Remove echo when not using
+  *during that line* (short lines: only an exact copy said at the same moment, so mirrored replies
+  like "Good morning." – "Good morning." stay). Replies that merely share common words with a long
+  turn ("I think we can do that") stay. Settings → Meetings → *Remove echo when not using
   headphones*; headphones avoid the problem entirely.
 
 **Files.** One folder per meeting:

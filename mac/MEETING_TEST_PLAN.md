@@ -42,6 +42,8 @@ For each of Zoom, Google Meet (Chrome and Safari), Microsoft Teams, a Slack hudd
 2. Repeat on the laptop speakers (no headphones). Few or no of the others' sentences appear as Me
    (echo de-dup). Turn *Remove echo when not using headphones* off and compare: the echoes appear.
 3. Talk over each other for a few seconds: both sides' words are kept.
+   Mirror greetings with headphones on ("Good morning." – "Good morning.", "Bye." – "Bye."): both
+   sides stay in the transcript.
 4. One Hindi/Hinglish meeting with Language = Both: Hindi lines come out in Latin (or Devanagari
    if chosen); English stays English.
 
@@ -58,6 +60,12 @@ For each of Zoom, Google Meet (Chrome and Safari), Microsoft Teams, a Slack hudd
    Advanced → Keep recordings), so the meeting's IO thread isn't starving the device.
 
 ### 4. Devices
+Watch Console (process VoiceType, search "VoiceType meeting") during these: every capture reopen is
+logged with what changed (default input/output, sample rate, stream layout, device gone, no audio).
+More than a few reopens in a quiet minute means a loop: note the reason line.
+
+0. Record for a minute with nothing playing and the mic idle: no "No audio from …" notice, no
+   reopen lines (silence still arrives as buffers).
 1. Connect AirPods mid-meeting (they become input and output): notice "Recording from AirPods…",
    both channels continue; after Stop, timestamps after the switch are still in step with the call.
 2. Unplug a USB/3.5 mm headset mid-meeting: same.

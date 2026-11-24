@@ -39,7 +39,7 @@ process tap + private aggregate ──┘   (host time)        └─ system.wav
 | Timestamps | `WhisperCppRecognizer.transcribeTimed` (`whisper_full_get_segment_t0/t1`); sherpa: one segment per chunk |
 | Meeting-safe clean-up | `MeetingCleanup` (Core): Transliterator + `RuleCleaner` with commands, corrections, fillers and final punctuation off; capitals + dictionary kept |
 | Per-chunk hallucination filter, cross-chunk repeats, near-silent chunks | `MeetingTextFilter` (Core) + `AudioLevel.isNearSilent` |
-| Echo de-dup (no headphones) | `EchoFilter` (Core): drop a Me segment when ≥ 80 % of its words sit in runs of ≥ 3 words that Others said inside the Me segment's own time span (±1.5 s; word times spread evenly over each Others segment); under 4 words only on an exact line match. Setting, default on |
+| Echo de-dup (no headphones) | `EchoFilter` (Core): drop a Me segment when ≥ 80 % of its words sit in runs of ≥ 3 words that Others said inside the Me segment's own time span (±1.5 s; word times spread evenly over each Others segment); under 4 words only on an exact match with an Others line that overlaps it in time (a mirrored reply comes after, an echo is simultaneous). Setting, default on |
 | RTF per meeting | `MeetingPipeline` sums decode time; `meeting.json` `rtf`, `tailSeconds`; NSLog; Debug perf log |
 | transcript.md / transcript.json / meeting.json | `MeetingRender`, `MeetingFiles`, `MeetingInfo` (Core) |
 | Keep audio setting | `Key.meetingKeepAudio` (default off): WAVs deleted once the transcript is final |
@@ -62,7 +62,11 @@ process tap + private aggregate ──┘   (host time)        └─ system.wav
 * **Never block on Core Audio from the main thread.** Captures open and close on their own control
   queues; the aggregate is created without "tap auto start" (which makes `AudioDeviceStart` wait for
   the first tapped audio, forever if nothing plays). A switch opens the new device before closing
-  the old one; failures retry with a backoff, and a 5 s no-buffers watchdog tells the user.
+  the old one, and the old one's audio is used until the new one's first buffer; failures retry
+  with a backoff. Every reopen is logged with what changed; unforced reopens are debounced (2 s)
+  and capped (3 a minute). A 5 s no-buffers watchdog (time since the last *buffer*, not since the
+  last open) reports one incident per channel, nudges with a growing pause, and says "back" only
+  when a buffer arrives after the incident began.
 * **Tap buffers are taken from the end of the aggregate's buffer list.** The aggregate clocks off the
   default output device (Apple's sample does this); if that device also has inputs (a headset), their
   streams come first and the tap's stream last.
