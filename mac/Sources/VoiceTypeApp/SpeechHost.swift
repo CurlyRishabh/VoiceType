@@ -22,6 +22,10 @@ final class SpeechHost {
 
     private(set) var lastLoadMillis = 0
     private(set) var loadedSpec: EngineSpec?
+    /// For the Debug tab: the loaded engine, and the language of the last decode (whisper.cpp takes
+    /// the language per call, so the load-time language says little).
+    private(set) var loadedName: String?
+    private(set) var lastLanguage: String?
     var isRecording: () -> Bool = { false }
     /// A meeting is recording: keep the model (no idle release, no release on a memory *warning*).
     private var held = false
@@ -58,6 +62,7 @@ final class SpeechHost {
                 let load = try self.ensureLoaded(spec)
                 let start = DispatchTime.now()
                 let engine = self.engine!
+                self.lastLanguage = spec.language
                 let text = chunks.map { engine.transcribe($0, prompt: prompt, language: spec.language) }.joined(separator: " ")
                     .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
                     .trimmingCharacters(in: .whitespaces)
@@ -92,7 +97,8 @@ final class SpeechHost {
                 let load = try self.ensureLoaded(spec)
                 let start = DispatchTime.now()
                 let engine = self.engine!
-                let r = engine.transcribeTimed(samples, prompt: prompt, language: spec.language)
+                let r = try engine.transcribeTimed(samples, prompt: prompt, language: spec.language)
+                self.lastLanguage = r.language
                 let decode = Int((DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000)
                 self.scheduleIdleRelease()
                 completion(.success(TimedChunk(segments: r.segments, language: r.language, decodeMillis: decode, loadMillis: load, engine: engine.name)))
@@ -125,6 +131,7 @@ final class SpeechHost {
         let loaded = try Recognizers.make(spec, modelsRoot: modelsRoot)
         engine = loaded
         loadedSpec = spec
+        loadedName = loaded.name
         lastLoadMillis = Int((DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000)
         NSLog("VoiceType: loaded %@ in %dms", loaded.name, lastLoadMillis)
         scheduleIdleRelease()
@@ -147,6 +154,7 @@ final class SpeechHost {
         if engine != nil { NSLog("VoiceType: released speech model") }
         engine = nil
         loadedSpec = nil
+        loadedName = nil
     }
 }
 

@@ -42,7 +42,8 @@ protocol SpeechRecognizing: AnyObject {
     /// `language`: "en", "hi" or "" (auto-detect). `prompt`: vocabulary hint (only whisper.cpp uses it).
     func transcribe(_ samples: [Float], prompt: String?, language: String) -> String
     /// The same, with times relative to the start of `samples`, and the language it was decoded in.
-    func transcribeTimed(_ samples: [Float], prompt: String?, language: String) -> (segments: [TimedText], language: String)
+    /// Throws when the decoder itself fails (a meeting then counts the chunk as missing).
+    func transcribeTimed(_ samples: [Float], prompt: String?, language: String) throws -> (segments: [TimedText], language: String)
 }
 
 extension SpeechRecognizing {
@@ -123,7 +124,7 @@ final class SherpaRecognizer: SpeechRecognizing {
     func transcribe(_ samples: [Float], prompt: String?, language: String) -> String { transcribe(samples) }
 
     /// sherpa-onnx gives no times: the chunk is one segment.
-    func transcribeTimed(_ samples: [Float], prompt: String?, language: String) -> (segments: [TimedText], language: String) {
+    func transcribeTimed(_ samples: [Float], prompt: String?, language: String) throws -> (segments: [TimedText], language: String) {
         let text = transcribe(samples)
         let seconds = Double(samples.count) / Double(sampleRate)
         return (text.isEmpty ? [] : [TimedText(text: text, start: 0, end: seconds)], spec.language)
