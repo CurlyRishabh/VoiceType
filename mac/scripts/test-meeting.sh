@@ -5,8 +5,9 @@
 #   scripts/test-meeting.sh --keep         also keep the generated audio and output (path printed)
 #
 # macOS voices speak a short meeting: "Me" on the mic channel, "Others" on the system-audio channel,
-# with pauses, one bit of crosstalk, a Hindi line, and a faint, slightly delayed copy of the others
-# in the mic (what a laptop mic hears without headphones). It then runs the real pipeline headless
+# with pauses, one bit of crosstalk, a Hindi line, a long turn of the others with two short replies
+# over it, and a faint, slightly delayed copy of the others in the mic (what a laptop mic hears
+# without headphones). It then runs the real pipeline headless
 # (VoiceType --meeting: WAVs, VAD per channel, live chunks, whisper.cpp, filters, echo de-dup, merge)
 # and checks speakers, words, order, the echo and the timing line.
 # Models: the app's shared folder, or MODELS=/path/to/models.
@@ -38,6 +39,9 @@ me	41	Samantha	Let's also decide on the launch date. I propose the twelfth of De
 others	47.5	Daniel	Agreed, the twelfth of December works for marketing.
 others	53.5	Lekha	कल की मीटिंग में डिज़ाइन पर बात करेंगे।
 me	59	Samantha	Perfect, thanks everyone. Talk to you next week.
+others	65	Daniel	So I think the main thing is that we need to get the export out before the review, and I know that it is not going to be easy, but if we can do the migration first then the rest of it should be fine. What I want to do is make sure that you and I are on the same page about that.
+me	72	Samantha	Yes, we can do that.
+me	79	Samantha	That should be fine.
 EOF
 
 n=0
@@ -101,10 +105,12 @@ for w in "invoice export" "o'clock" "sounds good" "marketing"; do check "Others 
 check "Hindi line in Latin script (Hinglish)" "$(yes_if said Others "kal\|meeting\|design")" "$(grep -iE 'kal|design' "$MD" | head -1 | cut -c1-90)"
 check "no Devanagari left" "$(yes_if not grep -q '[ऀ-ॿ]' "$MD")"
 for w in "invoice export" "marketing"; do check "echo of \"$w\" not attributed to Me" "$(yes_if not_said Me "$w")"; done
+# Short replies during a long turn share common words with it; the echo filter must keep them.
+for w in "we can do that" "should be fine"; do check "my reply \"$w\" kept during their long turn" "$(yes_if said Me "$w")"; done
 STAMPS="$(grep -oE '^\[[0-9:]{8}\]' "$MD" | tr -d '[]')"
 check "timestamps in order" "$(yes_if test "$STAMPS" == "$(sort <<<"$STAMPS")")"
-LAST="$(tail -1 <<<"$STAMPS")"
-check "timestamps on the meeting clock (last line near 0:59)" "$(yes_if grep -qE '^00:00:(5[4-9]|6[0-9])$' <<<"$LAST")" "$LAST"
+LAST="$(grep -i 'next week' "$MD" | grep -oE '^\[[0-9:]{8}\]' | tr -d '[]' | head -1)"
+check "timestamps on the meeting clock (\"next week\" line near 0:59)" "$(yes_if grep -qE '^00:00:(5[4-9]|6[0-4])$' <<<"$LAST")" "$LAST"
 check "transcript.json and meeting.json written" "$(yes_if test -s "$TMP/out/transcript.json" -a -s "$TMP/out/meeting.json")"
 check "meeting.json says ready" "$(yes_if grep -q '"status" : "ready"' "$TMP/out/meeting.json")"
 check "audio was written to disk" "$(yes_if test -s "$TMP/out/mic.wav" -a -s "$TMP/out/system.wav")"
