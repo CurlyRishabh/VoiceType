@@ -54,12 +54,20 @@ For each of Zoom, Google Meet (Chrome and Safari), Microsoft Teams, a Slack hudd
 3. Dictation feels as fast as without a meeting (it waits for at most one meeting chunk).
 4. If dictation fails to start during a meeting on some device ("Microphone error"), note the mic
    model: that device does not allow the meeting's IOProc and dictation's engine at once.
+5. Dictation sounds clean during a meeting (no clicks or dropouts in its recording: Settings →
+   Advanced → Keep recordings), so the meeting's IO thread isn't starving the device.
 
 ### 4. Devices
 1. Connect AirPods mid-meeting (they become input and output): notice "Recording from AirPods…",
    both channels continue; after Stop, timestamps after the switch are still in step with the call.
 2. Unplug a USB/3.5 mm headset mid-meeting: same.
 3. Switch the output device in Control Centre while the other side talks: Others continues.
+4. AirPods as input and output while music plays: they switch to the headset profile (lower
+   sample rate). Others must not play back fast or slow in the kept WAV (turn *Keep audio* on), and
+   the transcript must not have stretches of silence-induced gaps.
+5. On a Mac whose only mic is a USB headset: unplug it mid-meeting → "No audio from the microphone:
+   reconnecting…" within ~5 s; plug it back → "Microphone is back"; Me continues in the transcript.
+6. A Multi-Output Device as the default output: Others is still captured (tap-only fallback).
 
 ### 5. Stop paths and recovery
 1. Stop via ⌃⌥R, the flow bar ■, the menu bar item (shows the elapsed time), and the Meetings tab:
@@ -67,8 +75,10 @@ For each of Zoom, Google Meet (Chrome and Safari), Microsoft Teams, a Slack hudd
    macOS notification; both open the meeting.
 2. Close the lid (or Apple menu → Sleep) mid-meeting: after wake, "Transcript ready: stopped when
    your Mac went to sleep".
-3. Quit from the menu bar mid-meeting, relaunch: after ~2 s "Transcribed an interrupted meeting";
-   the meeting is complete up to the quit.
+3. Quit from the menu bar mid-meeting: the app stays up for the "Wrapping up…" (at most 15 s),
+   then quits with the meeting Ready. Quit again right after a long meeting's Stop: same.
+   If it had to quit before the transcript was done, the next launch shows "Transcribed an
+   interrupted meeting".
 4. `kill -9` the app mid-meeting, relaunch: same as 3 (meeting.json stop reason `crash`).
 5. Length limit: `defaults write dev.offline.voicetype.mac meeting_max_minutes -int 6`, record:
    warning at 1:00 (flow bar + notification), automatic stop and save at 6:00. Then
@@ -76,22 +86,32 @@ For each of Zoom, Google Meet (Chrome and Safari), Microsoft Teams, a Slack hudd
 6. Start and stop within a few seconds without talking: "Started by mistake? Only N words" with
    *Discard*; Discard removes the meeting, ignoring it keeps it.
 7. Low disk (only if a nearly full volume is at hand): warning under an hour left, stop when nearly full.
+8. Start with ⌃⌥R on a fresh install and press ⌃⌥R again while the consent alert is open: only one
+   meeting starts.
+9. Partial transcript: hard to cause by hand (a whisper.cpp decode error, or a model that can't be
+   reloaded after a critical memory-pressure release, each retried once). Whenever a meeting ends
+   "Partial", check that the detail view says how many parts failed and that the WAVs are kept.
 
 ### 6. Flow bar and screen sharing
 1. Pill: pulsing red dot, white/teal meter, timer (h:mm:ss past an hour), ■. Hover: widens to show
    the title and word count. Rename the meeting while recording: the hover shows the new title.
 2. With *Hide from screen sharing while recording* on (default), share the screen in Zoom/Meet and
    take a ⌘⇧5 screen recording: the pill and the VoiceType window are not in them. Off: they are.
+   Toggle it during a recording: it takes effect at once. If a meeting app still shows the windows
+   (newer capture APIs may ignore the request), note which app.
 3. Notices that arrive while you dictate wait until the dictation is done.
 
 ### 7. Meetings tab
 1. List: title, "Today at …", length, words, status chip (Recording with a live timer while
    recording, Transcribing, Ready, Failed). Search finds a word from inside a transcript.
-2. Detail: rename (Return) renames meeting.json, transcript.md's title and the folder; find shows
+2. While recording, type in the search box and press Return: the recording keeps going. Rename
+   the meeting during "Wrapping up…": the finished meeting (and its folder) has the new title.
+3. Detail: rename (Return) renames meeting.json, transcript.md's title and the folder; find shows
    "n of m" and next/previous scroll to the line; Copy transcript / Copy for AI paste correctly
    into Claude or Codex; Show in Finder selects transcript.md; Delete asks, then removes the folder.
-3. *Keep audio after transcription* off: the folder has no WAVs after Ready. On: mic.wav and
+4. *Keep audio after transcription* off: the folder has no WAVs after Ready. On: mic.wav and
    system.wav stay and play in QuickTime, in sync with each other.
+5. An interrupted meeting that couldn't be recovered (no model) can be deleted.
 
 ### 8. Long meeting
 Record a real 60–90 minute meeting: memory stays flat in Activity Monitor (no growth with length),

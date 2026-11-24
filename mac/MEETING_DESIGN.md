@@ -39,7 +39,7 @@ process tap + private aggregate ──┘   (host time)        └─ system.wav
 | Timestamps | `WhisperCppRecognizer.transcribeTimed` (`whisper_full_get_segment_t0/t1`); sherpa: one segment per chunk |
 | Meeting-safe clean-up | `MeetingCleanup` (Core): Transliterator + `RuleCleaner` with commands, corrections, fillers and final punctuation off; capitals + dictionary kept |
 | Per-chunk hallucination filter, cross-chunk repeats, near-silent chunks | `MeetingTextFilter` (Core) + `AudioLevel.isNearSilent` |
-| Echo de-dup (no headphones) | `EchoFilter` (Core): drop a Me segment whose words match (LCS ≥ 70 %) the Others text overlapping it in time (±1.5 s); short lines only on an exact match. Setting, default on |
+| Echo de-dup (no headphones) | `EchoFilter` (Core): drop a Me segment when ≥ 80 % of its words sit in runs of ≥ 3 words that Others said inside the Me segment's own time span (±1.5 s; word times spread evenly over each Others segment); under 4 words only on an exact line match. Setting, default on |
 | RTF per meeting | `MeetingPipeline` sums decode time; `meeting.json` `rtf`, `tailSeconds`; NSLog; Debug perf log |
 | transcript.md / transcript.json / meeting.json | `MeetingRender`, `MeetingFiles`, `MeetingInfo` (Core) |
 | Keep audio setting | `Key.meetingKeepAudio` (default off): WAVs deleted once the transcript is final |
@@ -57,6 +57,12 @@ process tap + private aggregate ──┘   (host time)        └─ system.wav
   device anyway; using the same code for the mic gives both channels the same host-time clock and
   avoids a second `AVAudioEngine` input node. Several IOProcs on one device are a normal Core Audio
   case (it is how several apps share a mic), so dictation's engine and the meeting's IOProc coexist.
+  The IOProc runs on the real-time IO thread and only copies the samples; downmix and resampling
+  run on a queue. Formats are checked (32-bit float) and rate/layout changes reopen the capture.
+* **Never block on Core Audio from the main thread.** Captures open and close on their own control
+  queues; the aggregate is created without "tap auto start" (which makes `AudioDeviceStart` wait for
+  the first tapped audio, forever if nothing plays). A switch opens the new device before closing
+  the old one; failures retry with a backoff, and a 5 s no-buffers watchdog tells the user.
 * **Tap buffers are taken from the end of the aggregate's buffer list.** The aggregate clocks off the
   default output device (Apple's sample does this); if that device also has inputs (a headset), their
   streams come first and the tap's stream last.
@@ -64,7 +70,10 @@ process tap + private aggregate ──┘   (host time)        └─ system.wav
 * **One chunk in flight.** The meeting never queues more than one job on `SpeechHost`'s serial
   queue, so a dictation waits for at most one ≤ 25 s chunk (≈ 0.3–1 s on Apple silicon).
 * **Recovery re-transcribes from the WAVs** (VAD → chunks → decode) instead of persisting partial
-  results: simpler, and at the measured RTF an hour of audio is a couple of minutes.
+  results: simpler, and at the measured RTF an hour of audio is a couple of minutes. Saving order
+  is transcript → meeting.json → delete audio, so a crash leaves either the audio or a complete
+  transcript (recovered as ready). A failed chunk is retried once; any that still fail make the
+  meeting "partial" and keep its audio.
 * **Meetings need Whisper** (whisper.cpp preferred). With only Moonshine, English-only meetings work
   with chunk-level timestamps. A Moonshine dictation during a Whisper meeting reloads models.
 

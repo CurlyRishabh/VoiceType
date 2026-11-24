@@ -93,8 +93,13 @@ afterwards.
   Audio process tap on all output except VoiceType's own) is **Others**. No speaker recognition
   beyond that.
 * **Written to disk as it records.** Each channel goes to `mic.wav` / `system.wav` (16 kHz, 16-bit)
-  in the meeting's folder, aligned on one clock, so a crash, quit or sleep loses nothing. If the
-  app quits or crashes mid-meeting, the next launch transcribes what was recorded.
+  in the meeting's folder, aligned on one clock, so a crash, quit or sleep loses nothing. Quitting
+  mid-meeting stops and saves it and waits up to 15 s for the transcript; whatever is left after a
+  quit or crash is transcribed at the next launch.
+* **Devices come and go.** When the default mic or output changes (AirPods connect, a headset is
+  unplugged) or a device changes its sample rate, the channel switches over; the new device is
+  opened before the old one is let go, and a failed switch is retried. A channel that delivers no
+  audio at all for 5 s gets a notice ("No audio from the microphone: reconnecting…").
 * **Transcribed while you talk.** Each channel has its own voice detector; finished stretches of
   speech (up to 25 s) are decoded in the background, one at a time, so a dictation never waits for
   more than one of them. After *Stop* only the last few seconds are left ("Wrapping up…"):
@@ -110,10 +115,11 @@ afterwards.
   wait" isn't a correction, nothing is removed as a filler. Only capitals, Hindi script and the
   Dictionary. Whisper's near-silence inventions ("Thank you.") are dropped per chunk, as is a chunk
   that only repeats the one before (hold music, noise), and near-silent chunks aren't decoded.
-* **Echo without headphones.** The mic also hears the others through the speakers; a Me line that
-  closely matches what the others said at the same moment is dropped (Settings → Meetings →
-  *Remove echo when not using headphones*; turn it off if your own lines go missing). Headphones
-  avoid the problem entirely.
+* **Echo without headphones.** The mic also hears the others through the speakers. A Me line is
+  dropped when at least 80 % of its words are runs of three or more words that the others said
+  *during that line* (short lines: only an exact copy). Replies that merely share common words with
+  a long turn ("I think we can do that") stay. Settings → Meetings → *Remove echo when not using
+  headphones*; headphones avoid the problem entirely.
 
 **Files.** One folder per meeting:
 `~/Library/Application Support/VoiceType/Meetings/<YYYY-MM-DD HHmm> <title>/`
@@ -122,11 +128,12 @@ afterwards.
 |---|---|
 | `transcript.md` | Title, date, time, length, model, languages; a short instruction block for Claude/Codex (summary, decisions, action items with owners, open questions, cite timestamps); then `[hh:mm:ss] **Me:** …` / `**Others:** …` lines, consecutive lines of one speaker merged |
 | `transcript.json` | Every segment: `start`, `end` (seconds), `channel`, `speaker`, `text`, `language` |
-| `meeting.json` | Title, start/end, status, length, decode time, real-time factor, stop reason, system-audio state, word count |
-| `mic.wav`, `system.wav` | The audio, while recording. Deleted once the transcript is saved unless **Keep audio after transcription** is on (about 115 MB per channel per hour) |
+| `meeting.json` | Title, start/end, status, length, decode time, real-time factor, stop reason, system-audio state, word count, failed parts |
+| `mic.wav`, `system.wav` | The audio, while recording. Deleted once the transcript is saved unless **Keep audio after transcription** is on (about 115 MB per channel per hour). Always kept when part of the meeting couldn't be transcribed |
 
 **The Meetings tab** lists them (title, date, length, words, Recording / Transcribing / Ready /
-Failed, search over titles and transcripts). A meeting opens with an editable title, the
+Partial (some parts couldn't be transcribed; audio kept) / Failed, search over titles and
+transcripts). A meeting opens with an editable title, the
 transcript with timestamps and speakers, find (with next/previous), **Copy transcript**, **Copy
 for AI**, **Show in Finder** and **Delete**.
 
@@ -141,9 +148,10 @@ places and companies that is required.
 **Guards.** A maximum length (30 min / 1 h / **2 h** / 3 h, Settings → Meetings), with a warning 5
 minutes before and an automatic stop and save; stop and save when the Mac goes to sleep; a warning
 when the disk has under an hour of recording left, and a stop when it is nearly full; a
-"Started by mistake?" *Discard* offer when fewer than 20 words were transcribed. The flow bar and
-VoiceType's windows are hidden from screen sharing and screen recordings while a meeting records
-(on by default).
+"Started by mistake?" *Discard* offer for a recording under 5 minutes with fewer than 20 words; a
+stop when the disk refuses to save audio. While a meeting records, the flow bar and VoiceType's
+windows ask macOS to be left out of screen shares and recordings (on by default; check it with
+your meeting app, as not every capture method honours it).
 
 **Privacy.** Same as dictation: no network entitlement, so macOS blocks VoiceType from connecting
 anywhere; audio and transcripts stay in the folder above. The entitlements are unchanged: the
