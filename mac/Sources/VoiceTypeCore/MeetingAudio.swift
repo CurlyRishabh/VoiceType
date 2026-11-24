@@ -129,10 +129,12 @@ public enum WavReader {
 /// Keeps a channel on the meeting's clock. Each buffer says when it was captured; when it arrives
 /// later than the samples already written account for (the device started late, restarted after a
 /// device change, or dropped buffers), the gap is filled with silence so Me and Others share one
-/// timeline. Jitter and clock drift below `tolerance` are ignored, and audio is never dropped.
+/// timeline. Jitter and clock drift below `tolerance` are ignored (a device clock off by 50 ppm
+/// drifts a second in 5½ hours; padding for it would put silence in the middle of words), and audio
+/// is never dropped.
 public struct ChannelAligner: Sendable {
     public let tolerance: Int
-    public init(tolerance: Int = sampleRate / 4) { self.tolerance = tolerance }
+    public init(tolerance: Int = sampleRate) { self.tolerance = tolerance }
 
     /// Silence to write before a buffer captured at `expected` (samples since the meeting started).
     public func gap(written: Int, expected: Int) -> Int {

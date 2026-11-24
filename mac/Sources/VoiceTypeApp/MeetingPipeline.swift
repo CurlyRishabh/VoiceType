@@ -138,7 +138,8 @@ final class MeetingPipeline {
             // Near-silent: nothing worth decoding, only room for Whisper to invent text.
             if !samples.isEmpty, !AudioLevel.isNearSilent(samples) { next = (job, samples) }
         }
-        guard var (job, samples) = next else { checkDone(); return }
+        guard let (job, audio) = next else { checkDone(); return }
+        var samples = audio
         if config.tokenBudget, WhisperBudget.needsPadding(whisper: config.spec.kind == .hindiEnglish, language: config.spec.language) {
             samples = WhisperBudget.pad(samples)
         }
