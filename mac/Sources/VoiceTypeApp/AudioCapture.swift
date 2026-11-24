@@ -89,21 +89,37 @@ struct CaptureError: LocalizedError {
     init(_ what: String) { errorDescription = what }
 }
 
-/// When a channel last delivered audio, read by the meeting's no-audio watchdog on the main thread;
-/// and which capture is current, so a replaced one's last buffers are dropped.
+/// A channel's capture state for the meeting's no-audio watchdog (read on the main thread) and
+/// for switching captures. "Opened" and "buffer received" are kept apart: opening a device again
+/// says nothing about whether audio flows.
 final class AudioClock: @unchecked Sendable {
-    private let last = Atomic<UInt64>(0)
+    private let lastBuffer = Atomic<UInt64>(0)
+    private let opened = Atomic<UInt64>(0)
     private let current = Atomic<Int>(0)
 
-    func mark() { last.store(AudioGetCurrentHostTime(), ordering: .relaxed) }
+    static var now: UInt64 { AudioGetCurrentHostTime() }
 
+    func markOpened() { opened.store(Self.now, ordering: .relaxed) }
+    func markBuffer() { lastBuffer.store(Self.now, ordering: .relaxed) }
+
+    /// Since the last buffer (or, before the first one, since the capture opened).
     var secondsSinceAudio: Double {
-        let l = last.load(ordering: .relaxed), now = AudioGetCurrentHostTime()
-        return l == 0 || now < l ? 0 : Double(AudioConvertHostTimeToNanos(now - l)) / 1e9
+        let since = max(lastBuffer.load(ordering: .relaxed), opened.load(ordering: .relaxed)), now = Self.now
+        return since == 0 || now < since ? 0 : Double(AudioConvertHostTimeToNanos(now - since)) / 1e9
     }
 
-    func makeCurrent(_ id: Int) { current.store(id, ordering: .relaxed) }
-    func isCurrent(_ id: Int) -> Bool { current.load(ordering: .relaxed) == id }
+    /// A buffer arrived after `host` (host time).
+    func hasBuffer(after host: UInt64) -> Bool { lastBuffer.load(ordering: .relaxed) > host }
+
+    /// Whether capture `id`'s audio goes on. A newer capture takes over with its first buffer, so the
+    /// old one keeps the channel going while a (slow, Bluetooth) device starts; older ones are dropped.
+    func accept(_ id: Int) -> Bool {
+        let cur = current.load(ordering: .relaxed)
+        if id == cur { return true }
+        guard id > cur else { return false }
+        current.store(id, ordering: .relaxed)
+        return true
+    }
 }
 
 /// 16 kHz mono audio from a capture. `first`: the first buffer after the capture (re)started, so the
@@ -162,10 +178,14 @@ final class DeviceCapture {
 
     private static let ids = Atomic<Int>(0)
 
-    /// The rate or stream layout differs from when it started (or the device is gone).
-    var formatChanged: Bool {
-        !AudioDevices.isAlive(device) || AudioDevices.sampleRate(device) != startedRate
-            || AudioDevices.inputFormats(device).map(\.mChannelsPerFrame) != startedLayout
+    /// What changed since it started (the device is gone, its rate, its stream layout), or nil.
+    /// A value that couldn't be read at start, or can't be read now, counts as unknown, not changed.
+    var changeReason: String? {
+        if !AudioDevices.isAlive(device) { return "device \(device) is gone" }
+        if let was = startedRate, let now = AudioDevices.sampleRate(device), now != was { return "sample rate \(Int(was)) → \(Int(now)) Hz" }
+        let layout = AudioDevices.inputFormats(device).map(\.mChannelsPerFrame)
+        if !startedLayout.isEmpty, !layout.isEmpty, layout != startedLayout { return "input streams \(startedLayout) → \(layout)" }
+        return nil
     }
 
     /// Call on `control`.
@@ -196,7 +216,7 @@ final class DeviceCapture {
         }
         guard status == noErr, let procID else { watches = []; throw CaptureError("Could not open the audio device", status) }
         self.procID = procID
-        clock.mark() // the watchdog counts from now
+        clock.markOpened()
         status = AudioDeviceStart(device, procID)
         guard status == noErr else {
             AudioDeviceDestroyIOProcID(device, procID)
@@ -242,7 +262,7 @@ final class DeviceCapture {
         let host = time.pointee.mFlags.contains(.hostTimeValid) ? time.pointee.mHostTime : AudioGetCurrentHostTime()
         let first = firstPending
         firstPending = false
-        clock.mark()
+        clock.markBuffer()
         work.async { [weak self] in self?.convert(parts, host, first) }
     }
 
@@ -311,11 +331,17 @@ class ChannelCapture {
     private var attempt = 0
     private var retry: DispatchWorkItem?
     private var troubled = false
-    private var lastOpen: TimeInterval = 0
+    /// When the last open was attempted, whether it worked or not.
+    private var lastAttempt: TimeInterval = 0
     private var recheck: DispatchWorkItem?
+    private var recentUnforced: [TimeInterval] = []
     /// Device notifications come in bursts (and opening a device causes some): at most one
-    /// unforced switch every this many seconds, the rest re-checked afterwards.
+    /// unforced attempt every this many seconds, the rest re-checked afterwards.
     static let settle: TimeInterval = 2
+    /// More unforced reopens than this in `capWindow` seconds is a loop (a value that never reads
+    /// the same twice): further changes wait until the window has passed.
+    static let maxUnforced = 3
+    static let capWindow: TimeInterval = 60
 
     init(label: String) { control = DispatchQueue(label: label) }
 
@@ -323,9 +349,9 @@ class ChannelCapture {
     func start(_ done: @escaping (Error?) -> Void) {
         control.async {
             self.running = true
+            self.lastAttempt = ProcessInfo.processInfo.systemUptime
             do {
                 try self.open()
-                self.lastOpen = ProcessInfo.processInfo.systemUptime
                 self.didStart()
                 DispatchQueue.main.async { done(nil) }
             } catch {
@@ -346,31 +372,55 @@ class ChannelCapture {
         }
     }
 
-    /// The watchdog saw no audio for a while: open again, even on the same device.
-    func nudge() { control.async { self.reopen(force: true) } }
+    /// The watchdog saw no audio since `host`: open again, even on the same device, unless a buffer
+    /// came in meanwhile (checked here, on `control`, as a nudge may have waited behind a slow open).
+    func nudge(ifNoBufferSince host: UInt64) {
+        control.async {
+            guard !self.clock.hasBuffer(after: host) else { return }
+            self.reopen(force: true, why: "no audio for \(Int(self.clock.secondsSinceAudio)) s")
+        }
+    }
 
     // Subclass hooks (on `control`).
     func open() throws { fatalError("override") }
     func close() {}
     func didStart() {}
-    /// True when the current capture still matches the system's device and format.
-    var isCurrent: Bool { true }
+    /// Why the current capture no longer matches the system's device or format, or nil.
+    var staleReason: String? { nil }
     var deviceName: String { "" }
 
     /// A device or format notification (`force` false), or a retry / watchdog nudge (true).
-    func reopen(force: Bool) {
-        guard running, force || !isCurrent else { return }
-        let now = ProcessInfo.processInfo.systemUptime
-        if !force, now - lastOpen < Self.settle {
-            guard recheck == nil else { return }
-            let item = DispatchWorkItem { [weak self] in self?.recheck = nil; self?.reopen(force: false) }
-            recheck = item
-            control.asyncAfter(deadline: .now() + Self.settle, execute: item)
-            return
+    func reopen(force: Bool, why: String? = nil) {
+        guard running else { return }
+        let reason: String
+        if force {
+            reason = why ?? "retry"
+        } else {
+            guard let stale = staleReason else { return }
+            reason = stale
         }
+        let now = ProcessInfo.processInfo.systemUptime
+        if !force {
+            recentUnforced.removeAll { now - $0 > Self.capWindow }
+            let wait = now - lastAttempt < Self.settle ? Self.settle - (now - lastAttempt)
+                : recentUnforced.count >= Self.maxUnforced ? Self.capWindow - (now - recentUnforced[0]) : 0
+            if wait > 0 {
+                guard recheck == nil else { return }
+                if recentUnforced.count >= Self.maxUnforced {
+                    NSLog("VoiceType meeting: %@: %d reopens in %d s, waiting %.0f s before the next (%@)", control.label,
+                          recentUnforced.count, Int(Self.capWindow), wait, reason)
+                }
+                let item = DispatchWorkItem { [weak self] in self?.recheck = nil; self?.reopen(force: false) }
+                recheck = item
+                control.asyncAfter(deadline: .now() + wait, execute: item)
+                return
+            }
+            recentUnforced.append(now)
+        }
+        NSLog("VoiceType meeting: %@ reopening (%@)", control.label, reason)
+        lastAttempt = now
         do {
             try open()
-            lastOpen = ProcessInfo.processInfo.systemUptime
             attempt = 0
             retry?.cancel()
             retry = nil
@@ -382,24 +432,24 @@ class ChannelCapture {
                 DispatchQueue.main.async { self.onSwitched?(name, wasTroubled) }
             }
         } catch {
-            NSLog("VoiceType meeting: %@ reopen failed: %@", control.label, error.localizedDescription)
+            NSLog("VoiceType meeting: %@ reopen failed (attempt %d): %@", control.label, attempt + 1, error.localizedDescription)
             attempt += 1
             if !troubled {
                 troubled = true
                 let why = error.localizedDescription
                 DispatchQueue.main.async { self.onTrouble?(why) }
             }
-            let item = DispatchWorkItem { [weak self] in self?.reopen(force: true) }
+            let item = DispatchWorkItem { [weak self] in self?.reopen(force: true, why: "retry after a failed open") }
             retry?.cancel()
             retry = item
             control.asyncAfter(deadline: .now() + min(8, pow(2, Double(attempt - 1))), execute: item)
         }
     }
 
-    /// Forwards only the current capture's audio (a replaced one may still have buffers in flight).
+    /// Forwards a capture's audio while it is the newest one delivering (see `AudioClock.accept`).
     func forward(_ c: DeviceCapture) {
         let id = c.id, clock = self.clock
-        c.onAudio = { [weak self] audio in if clock.isCurrent(id) { self?.onAudio?(audio) } }
+        c.onAudio = { [weak self] audio in if clock.accept(id) { self?.onAudio?(audio) } }
         c.onFormatChange = { [weak self] in self?.reopen(force: false) }
     }
 }
@@ -416,9 +466,8 @@ final class MicCapture: ChannelCapture {
         guard let device = AudioDevices.defaultInput else { throw CaptureError("No microphone available.") }
         let c = DeviceCapture(device: device, channels: .first, clock: clock, label: "meeting-mic", control: control)
         forward(c)
-        clock.makeCurrent(c.id)
-        do { try c.start() } catch { clock.makeCurrent(capture?.id ?? 0); throw error }
-        capture?.stop() // only now: a failed switch keeps the old one running
+        try c.start() // the old capture keeps delivering meanwhile; a failed switch leaves it running
+        capture?.stop()
         capture = c
     }
 
@@ -434,9 +483,12 @@ final class MicCapture: ChannelCapture {
         capture = nil
     }
 
-    override var isCurrent: Bool {
-        guard let c = capture else { return false }
-        return c.device == AudioDevices.defaultInput && !c.formatChanged
+    override var staleReason: String? {
+        guard let c = capture else { return "no capture" }
+        if let now = AudioDevices.defaultInput, now != c.device {
+            return "default input \(AudioDevices.name(c.device) ?? "\(c.device)") → \(AudioDevices.name(now) ?? "\(now)")"
+        }
+        return c.changeReason
     }
 
     override var deviceName: String { capture.flatMap { AudioDevices.name($0.device) } ?? "the microphone" }
@@ -526,10 +578,7 @@ final class SystemAudioCapture: ChannelCapture {
         let channels = AudioDevices.get(t.tap, kAudioTapPropertyFormat, AudioStreamBasicDescription()).map { Int($0.mChannelsPerFrame) } ?? 0
         let c = DeviceCapture(device: t.aggregate, channels: .tail(count: channels), clock: clock, label: "meeting-system-audio", control: control)
         forward(c)
-        let previous = current.capture?.id ?? 0
-        clock.makeCurrent(c.id)
-        do { try c.start() } catch {
-            clock.makeCurrent(previous)
+        do { try c.start() } catch { // the old tap keeps delivering meanwhile, and stays if this fails
             t.close()
             throw error
         }
@@ -549,15 +598,17 @@ final class SystemAudioCapture: ChannelCapture {
         current.close()
     }
 
-    /// Same output device (by UID) and an unchanged format: nothing to rebuild.
-    override var isCurrent: Bool {
-        guard let c = current.capture else { return false }
+    /// A different output device (by UID), a changed output rate, or a changed aggregate.
+    override var staleReason: String? {
+        guard let c = current.capture else { return "no tap" }
         let uid = AudioDevices.defaultOutput.flatMap(AudioDevices.uid)
-        let sameOutput = current.outputUID == nil || current.outputUID == uid
+        if let was = current.outputUID, let uid, uid != was { return "default output \(was) → \(uid)" }
         // Clocked by the output device: rebuild when its rate changed since (AirPods switching to the
-        // headset profile do that).
-        let rateSame = current.outputUID == nil || AudioDevices.defaultOutput.flatMap(AudioDevices.sampleRate) == current.outputRate
-        return sameOutput && rateSame && !c.formatChanged
+        // headset profile do that). Unknown before or now: not a change.
+        if current.outputUID != nil, let was = current.outputRate, let now = AudioDevices.defaultOutput.flatMap(AudioDevices.sampleRate), now != was {
+            return "output sample rate \(Int(was)) → \(Int(now)) Hz"
+        }
+        return c.changeReason
     }
 
     override var deviceName: String { "other apps’ sound" }

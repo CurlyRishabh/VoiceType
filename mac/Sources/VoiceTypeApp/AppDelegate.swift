@@ -75,6 +75,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             self?.meetingNotice(.init(text: "Transcribed an interrupted meeting", action: "Open", run: { self?.showMeeting(e.id) }, seconds: 8))
         }
         meetings.onNeedsSetup = { [weak self] in self?.showSettings() }
+        // A meeting open in the detail view follows its folder when that is renamed.
+        meetingStore.onRename = { [weak self] old, new in
+            if self?.mainModel.openMeeting == old { self?.mainModel.openMeeting = new }
+        }
         if MeetingNotifier.available { UNUserNotificationCenter.current().delegate = self }
         // A meeting the app didn't finish (crash, quit while recording): transcribe its audio now.
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.meetings.recoverInterrupted() }

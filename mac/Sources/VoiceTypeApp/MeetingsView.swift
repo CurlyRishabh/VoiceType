@@ -257,7 +257,7 @@ private struct MeetingDetailView: View {
             return
         }
         let inUse = entry.id == meetings.recoveringID
-        if let e = store.rename(entry, to: model.meetingTitleDraft, folderInUse: inUse) { model.openMeeting = e.id }
+        store.rename(entry, to: model.meetingTitleDraft, folderInUse: inUse) // the open view follows via onRename
     }
 
     private func facts(_ info: MeetingInfo) -> String {

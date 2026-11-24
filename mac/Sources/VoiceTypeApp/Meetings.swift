@@ -16,6 +16,8 @@ final class MeetingStore: ObservableObject {
 
     @Published private(set) var entries: [Entry] = []
     let root: URL
+    /// A meeting's folder (its id) changed: old id, new id. Main thread.
+    var onRename: ((String, String) -> Void)?
     private var linesCache: [String: [TranscriptLine]] = [:]
     private var textCache: [String: String] = [:]
 
@@ -76,7 +78,10 @@ final class MeetingStore: ObservableObject {
             let name = MeetingFiles.folderName(start: info.startedAt, title: t)
             if !folder.lastPathComponent.hasPrefix(name) { // "<name> 2" (a duplicate) already fits
                 let dest = MeetingFiles.uniqueFolder(in: root, name: name)
-                if (try? FileManager.default.moveItem(at: folder, to: dest)) != nil { folder = dest }
+                if (try? FileManager.default.moveItem(at: folder, to: dest)) != nil {
+                    folder = dest
+                    onRename?(e.id, dest.lastPathComponent)
+                }
             }
         }
         guard titleChanged || folder != e.folder else { return e }
@@ -162,7 +167,19 @@ final class MeetingController: ObservableObject {
     private var starting = false
     private var diskWarned = false
     private var micSilentWarned = false
-    private var stalled: [MeetingChannel: TimeInterval] = [:]
+    /// A channel in trouble (no audio, or its device won't open): one incident, one notice when it
+    /// starts and one when audio is back.
+    private struct Trouble {
+        /// Host time it began: only a buffer after this ends it.
+        var began: UInt64
+        /// The capture is failing to open a device (ends with a successful open, not just with audio
+        /// from the old device).
+        var openFailing: Bool
+        var device: String?
+        var nextNudge: TimeInterval
+        var nudgeEvery: TimeInterval
+    }
+    private var trouble: [MeetingChannel: Trouble] = [:]
     private var recoveryTried = Set<String>()
     private var quitWaiters: [() -> Void] = []
     private var sleepObserver: NSObjectProtocol?
@@ -255,7 +272,7 @@ final class MeetingController: ObservableObject {
         ticks = 0
         diskWarned = false
         micSilentWarned = false
-        stalled = [:]
+        trouble = [:]
         systemAudio = .unknown
         limit = MeetingLimit(minutes: UserDefaults.standard.integer(forKey: Key.meetingMaxMinutes))
         currentID = folder.lastPathComponent
@@ -320,16 +337,37 @@ final class MeetingController: ObservableObject {
         c.onTrouble = { [weak self] why in
             guard let self, self.phase == .recording else { return }
             NSLog("VoiceType meeting: %@ trouble: %@", ch.rawValue, why)
-            self.notice(.init(text: ch == .me ? "Microphone disconnected: reconnecting…" : "Lost other apps’ sound: reconnecting…", seconds: 6))
+            self.beginTrouble(ch, openFailing: true)
         }
         c.onSwitched = { [weak self] name, afterTrouble in
             guard let self, self.phase == .recording else { return }
-            if ch == .me {
-                self.notice(.init(text: afterTrouble ? "Microphone is back: \(name)" : "Recording from \(name)", seconds: 3))
-            } else if afterTrouble {
-                self.notice(.init(text: "Other apps’ sound is back", seconds: 3))
+            if afterTrouble {
+                // Opened again; "back" is said once audio actually arrives (watchdog).
+                self.trouble[ch]?.openFailing = false
+                self.trouble[ch]?.device = name
+            } else if ch == .me, self.trouble[ch] == nil {
+                self.notice(.init(text: "Recording from \(name)", seconds: 3))
             }
         }
+    }
+
+    /// Starts an incident for `ch` unless one is going on (then it only notes an open failure).
+    private func beginTrouble(_ ch: MeetingChannel, openFailing: Bool) {
+        if trouble[ch] != nil {
+            if openFailing { trouble[ch]?.openFailing = true }
+            return
+        }
+        trouble[ch] = Trouble(began: AudioClock.now, openFailing: openFailing, device: nil,
+                              nextNudge: ProcessInfo.processInfo.systemUptime, nudgeEvery: 5)
+        let text: String
+        switch (ch, openFailing) {
+        case (.me, false): text = "No audio from the microphone: reconnecting…"
+        case (.me, true): text = "Couldn’t open the microphone: retrying…"
+        case (.others, false): text = "No audio from other apps: reconnecting…"
+        case (.others, true): text = "Couldn’t capture other apps’ sound: retrying…"
+        }
+        notice(.init(text: text, action: ch == .me ? "Fix" : "Turn on", run: ch == .me ? onNeedsSetup : SystemAudioPermission.openSettings, seconds: 8))
+        if ch == .others, !openFailing, systemAudio != .ok { systemAudio = .silent }
     }
 
     /// Only digital silence from a channel. For system audio that usually means System Audio
@@ -405,31 +443,33 @@ final class MeetingController: ObservableObject {
         }
         watchdog()
         ticks += 1
-        if ticks % 30 == 0 { checkDisk(); saveProgress() }
+        if ticks % 30 == 0 {
+            checkDisk() // may stop the meeting
+            saveProgress()
+        }
         onTick?()
     }
 
     /// A channel that delivers no buffers at all (not even silence) is stuck or gone: say so once,
-    /// and ask the capture to open again every few seconds until audio flows.
+    /// ask the capture to open again with a growing pause (5, 10, 20… 60 s), and say "back" only when
+    /// a buffer arrives after the trouble began. Reopening a device that then stays silent is not "back".
     private func watchdog() {
         let now = ProcessInfo.processInfo.systemUptime
         for (ch, capture) in [(MeetingChannel.me, mic as ChannelCapture?), (.others, system)] {
             guard let capture else { continue }
-            guard capture.clock.secondsSinceAudio > Self.stallSeconds else {
-                if stalled[ch] != nil {
-                    stalled[ch] = nil
-                    notice(.init(text: ch == .me ? "Microphone audio is back" : "Other apps’ sound is back", seconds: 3))
-                }
+            if trouble[ch] == nil, capture.clock.secondsSinceAudio > Self.stallSeconds { beginTrouble(ch, openFailing: false) }
+            guard var t = trouble[ch] else { continue }
+            if !t.openFailing, capture.clock.hasBuffer(after: t.began) {
+                trouble[ch] = nil
+                let text = ch == .me ? "Microphone is back\(t.device.map { ": \($0)" } ?? "")" : "Other apps’ sound is back"
+                notice(.init(text: text, seconds: 3))
                 continue
             }
-            if stalled[ch] == nil {
-                notice(.init(text: ch == .me ? "No audio from the microphone: reconnecting…" : "No audio from other apps: reconnecting…",
-                             action: ch == .me ? "Fix" : "Turn on", run: ch == .me ? onNeedsSetup : SystemAudioPermission.openSettings, seconds: 8))
-                if ch == .others, systemAudio != .ok { systemAudio = .silent }
-            }
-            if now - (stalled[ch] ?? 0) >= 10 {
-                stalled[ch] = now
-                capture.nudge()
+            if capture.clock.secondsSinceAudio > Self.stallSeconds, now >= t.nextNudge {
+                capture.nudge(ifNoBufferSince: t.began)
+                t.nextNudge = now + t.nudgeEvery
+                t.nudgeEvery = min(60, t.nudgeEvery * 2)
+                trouble[ch] = t
             }
         }
     }
@@ -449,7 +489,7 @@ final class MeetingController: ObservableObject {
 
     /// meeting.json keeps the length so far (the list shows it; recovery reads the WAVs anyway).
     private func saveProgress() {
-        guard var info, let folder else { return }
+        guard phase == .recording, var info, let folder else { return } // after a stop, meeting.json says "transcribing"
         info.durationSeconds = Double(elapsed)
         info.systemAudio = systemAudio
         info.title = title
@@ -545,12 +585,12 @@ final class MeetingController: ObservableObject {
         var info = entry.info
         let keep = UserDefaults.standard.bool(forKey: Key.meetingKeepAudio)
 
-        // Killed after the transcript was written but before meeting.json said so.
-        if let segments = MeetingFiles.readTranscript(entry.folder) {
-            info.status = .ready
-            info.wordCount = MeetingTranscript.wordCount(segments)
-            info.audioKept = keep
-            if (try? MeetingFiles.writeInfo(info, to: entry.folder)) != nil, !keep { MeetingFiles.deleteAudio(entry.folder) }
+        // Killed after transcript.json was written but before meeting.json said so: its status
+        // (saved with it) decides; transcript.md may be missing, so it is written again.
+        if let recovered = MeetingFiles.recoveredInfo(info, folder: entry.folder, keepAudio: keep) {
+            info = recovered.info
+            try? MeetingFiles.writeMarkdown(recovered.segments, info: info, to: entry.folder)
+            if (try? MeetingFiles.writeInfo(info, to: entry.folder)) != nil, !info.audioKept { MeetingFiles.deleteAudio(entry.folder) }
             store.refresh()
             recoverInterrupted()
             return
