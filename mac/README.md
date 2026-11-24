@@ -48,12 +48,14 @@ imports it again. (Models imported by version 1.0 are moved there on first launc
 | **⇧⌥ Space** | Also hands-free: press once to start, again to finish. Needs no permission. Pressed while holding fn, it keeps the recording going after you let go. Turn it off in Settings → Dictation. |
 | **esc** (or ✕) | Cancels; nothing is typed. |
 | **fn + another key** | Works as normal (fn+arrows, F-keys); dictation ignores it. |
+| **⌃⌥R** | Starts or stops a [meeting recording](#meeting-transcription). Needs no permission. Turn it off in Settings → Meetings. |
 
 * The **flow bar** at the bottom of the screen appears only while you dictate: level bars while you
   talk, a timer with ✕ and ■ in hands-free mode, "Typing…", or a one-line notice with a **Fix**
   button. (Want a small sliver there when idle too? Settings → Advanced → *Show the flow bar when idle*.)
-* The **VoiceType window** (menu bar → *Open VoiceType…*) has three tabs: **History** (search and
-  re-copy what you said), **Dictionary** and **Styles**. The gear button opens **Settings**.
+* The **VoiceType window** (menu bar → *Open VoiceType…*) has tabs for **History** (search and
+  re-copy what you said), **Meetings** (see [Meeting transcription](#meeting-transcription)),
+  **Dictionary** and **Styles**. The gear button opens **Settings**.
 * Long hands-free dictations are transcribed sentence by sentence while you talk, so the text is
   ready almost as soon as you stop (limit: 15 minutes; holding: 5 minutes).
 * **Styles** pick the AI-polish tone from the app you're typing in: Messages/Slack/WhatsApp →
@@ -72,6 +74,94 @@ keys and only reacts to fn and esc.
 Same clean-up as on the phone: filler removal, self-corrections ("at 5 no wait 6"), spoken
 commands ("new line", "comma", "question mark"…), personal dictionary, Hindi / Hinglish with Latin
 or Devanagari output, local-only history.
+
+## Meeting transcription
+
+VoiceType can also record a meeting (Zoom, Meet, Teams, Slack huddles: any app) and transcribe it
+on the Mac, with no bot joining the call and nothing uploaded. It is a transcript only: paste it
+into Claude or Codex for a summary (**Copy for AI** adds the instructions).
+
+**Start / stop:** **⌃⌥R** from any app, the menu bar (*Start meeting recording*), or the
+**Meetings** tab's *Start recording*. While it records, the flow bar shows a pulsing red dot, the
+time, a two-tone level meter (white = you, teal = the others) and a ■ button; hover it for the
+title and word count. Dictation keeps working during a meeting; the bar returns to the meeting
+afterwards.
+
+**How it works**
+
+* **Two channels, two speakers.** Your microphone is **Me**; the sound of every other app (a Core
+  Audio process tap on all output except VoiceType's own) is **Others**. No speaker recognition
+  beyond that.
+* **Written to disk as it records.** Each channel goes to `mic.wav` / `system.wav` (16 kHz, 16-bit)
+  in the meeting's folder, aligned on one clock, so a crash, quit or sleep loses nothing. If the
+  app quits or crashes mid-meeting, the next launch transcribes what was recorded.
+* **Transcribed while you talk.** Each channel has its own voice detector; finished stretches of
+  speech (up to 25 s) are decoded in the background, one at a time, so a dictation never waits for
+  more than one of them. After *Stop* only the last few seconds are left ("Wrapping up…"):
+  measured on an M5 Pro, a 10.8-minute two-channel test meeting decoded at **RTF 0.024**
+  (English) / **0.045** ("Both": the language is picked per chunk), and fed at 10× real time the
+  transcript was ready **0.4 s** after Stop. Roughly 1.5–3 minutes of GPU time per meeting hour,
+  spread over the meeting.
+* **Same model and settings as dictation:** Whisper large-v3-turbo on the GPU, your language
+  setting (English / हिंदी / Both; Hindi in Latin or Devanagari as you chose), and your Dictionary
+  as the vocabulary hint and spellings. *Translate to English* doesn't apply to meetings. The
+  model stays loaded while a meeting records.
+* **Meeting-safe clean-up.** None of dictation's rewriting: "comma" or "new line" stay words, "no
+  wait" isn't a correction, nothing is removed as a filler. Only capitals, Hindi script and the
+  Dictionary. Whisper's near-silence inventions ("Thank you.") are dropped per chunk, as is a chunk
+  that only repeats the one before (hold music, noise), and near-silent chunks aren't decoded.
+* **Echo without headphones.** The mic also hears the others through the speakers; a Me line that
+  closely matches what the others said at the same moment is dropped (Settings → Meetings →
+  *Remove echo when not using headphones*; turn it off if your own lines go missing). Headphones
+  avoid the problem entirely.
+
+**Files.** One folder per meeting:
+`~/Library/Application Support/VoiceType/Meetings/<YYYY-MM-DD HHmm> <title>/`
+
+| File | What |
+|---|---|
+| `transcript.md` | Title, date, time, length, model, languages; a short instruction block for Claude/Codex (summary, decisions, action items with owners, open questions, cite timestamps); then `[hh:mm:ss] **Me:** …` / `**Others:** …` lines, consecutive lines of one speaker merged |
+| `transcript.json` | Every segment: `start`, `end` (seconds), `channel`, `speaker`, `text`, `language` |
+| `meeting.json` | Title, start/end, status, length, decode time, real-time factor, stop reason, system-audio state, word count |
+| `mic.wav`, `system.wav` | The audio, while recording. Deleted once the transcript is saved unless **Keep audio after transcription** is on (about 115 MB per channel per hour) |
+
+**The Meetings tab** lists them (title, date, length, words, Recording / Transcribing / Ready /
+Failed, search over titles and transcripts). A meeting opens with an editable title, the
+transcript with timestamps and speakers, find (with next/previous), **Copy transcript**, **Copy
+for AI**, **Show in Finder** and **Delete**.
+
+**Permissions.** The microphone, as for dictation, plus **System Audio Recording** for the other
+side: macOS asks the first time you record a meeting (Privacy & Security → *Screen & System Audio
+Recording* → "System Audio Recording Only"). There is no way for an app to check this permission:
+when it is off, the other apps' sound is simply silent. VoiceType notices that after a few seconds
+and shows **"Recording your mic only"** with a *Turn on* button (it can also mean nothing has played
+yet). The first recording also reminds you to tell the others they are being recorded; in many
+places and companies that is required.
+
+**Guards.** A maximum length (30 min / 1 h / **2 h** / 3 h, Settings → Meetings), with a warning 5
+minutes before and an automatic stop and save; stop and save when the Mac goes to sleep; a warning
+when the disk has under an hour of recording left, and a stop when it is nearly full; a
+"Started by mistake?" *Discard* offer when fewer than 20 words were transcribed. The flow bar and
+VoiceType's windows are hidden from screen sharing and screen recordings while a meeting records
+(on by default).
+
+**Privacy.** Same as dictation: no network entitlement, so macOS blocks VoiceType from connecting
+anywhere; audio and transcripts stay in the folder above. The entitlements are unchanged: the
+meetings folder is inside the one home-folder path VoiceType could already write.
+
+**Limits.** Only Me vs Others (several people on the call are all "Others"). No pause/resume: a
+stopped meeting is finished. No live transcript view while recording (it is written in the
+background and shown after Stop). The echo filter is deliberately conservative. Meetings need the
+Whisper model (with only Moonshine imported, English meetings work with chunk-level times).
+
+Test the pipeline without a real call (two macOS voices, a Hindi line, echo in the mic channel):
+```bash
+scripts/test-meeting.sh        # pass/fail checks + timing; MODELS=/path to use another models folder
+DYLD_LIBRARY_PATH=vendor/sherpa-onnx/lib VOICETYPE_VAD=vendor/silero_vad.onnx \
+  "$(swift build -c release --arch arm64 --show-bin-path)/VoiceType" --meeting mic.wav system.wav ../models auto
+```
+How it is put together: [`MEETING_DESIGN.md`](MEETING_DESIGN.md). What still needs a real Mac
+with permissions: [`MEETING_TEST_PLAN.md`](MEETING_TEST_PLAN.md).
 
 ## Models
 
