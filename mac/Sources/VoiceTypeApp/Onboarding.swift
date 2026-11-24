@@ -193,7 +193,26 @@ struct OnboardingView: View {
                 }
             }
             switchItOnHint(.microphone, "Microphone")
+            systemAudio
         }
+    }
+
+    /// Optional, for meeting recording: the other side of a call is the sound of other apps.
+    private var systemAudio: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Recording meetings? (optional)", systemImage: "record.circle").font(.system(size: 13, weight: .semibold))
+            Text("To transcribe the other people on a call, VoiceType also records the sound of other apps. macOS asks for System Audio Recording the first time you record a meeting (\(KeyMonitor.meetingShortcutTitle)); it is listed under Screen & System Audio Recording.")
+                .font(.system(size: 12)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Text(SystemAudioPermission.statusText).font(.system(size: 12))
+                    .foregroundColor(SystemAudioPermission.lastState == .silent ? .orange : .secondary)
+                Spacer()
+                Button("Open System Settings") { SystemAudioPermission.openSettings() }
+            }
+        }
+        .padding(14)
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.12)))
+        .padding(.top, 6)
     }
 
     private var typing: some View {

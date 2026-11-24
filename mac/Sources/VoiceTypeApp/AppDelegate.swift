@@ -1,14 +1,17 @@
 import AppKit
 import AVFoundation
 import SwiftUI
+import UserNotifications
 import VoiceTypeCore
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
     let models = ModelStore()
     let history = HistoryStore()
     let polisher = AppleIntelligencePolisher()
     lazy var speech = SpeechHost(modelsRoot: models.root)
     lazy var dictation = Dictation(models: models, speech: speech, polisher: polisher, history: history)
+    let meetingStore = MeetingStore()
+    lazy var meetings = MeetingController(models: models, speech: speech, store: meetingStore)
     let flowBar = FlowBar()
 
     private let keys = KeyMonitor()
@@ -25,6 +28,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var licensesWindow: NSWindow?
     private var lastText: String?
     private var lastApp: String?
+    /// A meeting notice that arrived while a dictation had the flow bar.
+    private var pendingMeetingNotice: MeetingController.Notice?
+    /// Flow bar and windows kept out of screen capture (a meeting is on and the setting allows it).
+    private var captureHidden = false
 
     // MARK: launch
 
@@ -34,9 +41,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
-        setIcon(listening: false)
+        refreshIcon()
 
         flowBar.model.onStop = { [weak self] in self?.send(.stopButton) }
+        flowBar.model.onMeetingStop = { [weak self] in self?.meetings.stop() }
         flowBar.model.onCancel = { [weak self] in self?.send(.cancelButton) }
         flowBar.model.onOpen = { [weak self] in self?.showMainWindow() }
 
@@ -44,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         keys.onHandsFreeKey = { [weak self] in self?.send(.handsFreeKey) }
         keys.onOtherKey = { [weak self] in self?.send(.otherKey) }
         keys.onEscape = { [weak self] in self?.send(.escape) }
+        keys.onMeetingKey = { [weak self] in self?.meetings.toggle() }
 
         dictation.onState = { [weak self] s in self?.dictationState(s) }
         dictation.onLevel = { [weak self] in self?.flowBar.model.push($0) }
@@ -57,6 +66,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         dictation.onResult = { [weak self] r, target in self?.deliver(r.text, appName: target.appName) }
 
+        meetings.onPhase = { [weak self] in self?.meetingPhase($0) }
+        meetings.onTick = { [weak self] in self?.updateMeetingBar() }
+        meetings.onLevel = { [weak self] ch, level in self?.flowBar.model.pushMeeting(ch, level) }
+        meetings.onNotice = { [weak self] in self?.meetingNotice($0) }
+        meetings.onFinished = { [weak self] in self?.meetingFinished($0) }
+        meetings.onRecovered = { [weak self] e in
+            self?.meetingNotice(.init(text: "Transcribed an interrupted meeting", action: "Open", run: { self?.showMeeting(e.id) }, seconds: 8))
+        }
+        meetings.onNeedsSetup = { [weak self] in self?.showSettings() }
+        if MeetingNotifier.available { UNUserNotificationCenter.current().delegate = self }
+        // A meeting the app didn't finish (crash, quit while recording): transcribe its audio now.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.meetings.recoverInterrupted() }
+
         applyTrigger()
         dictation.warmUp()
         NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
@@ -68,6 +90,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    /// Quitting mid-meeting keeps the audio (it is on disk already); the next launch transcribes it.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        meetings.prepareForQuit()
+        return .terminateNow
+    }
 
     // MARK: trigger key -> gesture -> dictation
 
@@ -129,7 +157,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func dictationState(_ s: Dictation.State) {
-        setIcon(listening: s == .listening)
+        refreshIcon()
         switch s {
         case .listening:
             flowBar.set(dictation.handsFree ? .handsFree : .listening)
@@ -137,7 +165,90 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             flowBar.set(.typing)
         case .idle:
             if flowBar.model.phase != .notice { flowBar.set(.idle) }
+            if let n = pendingMeetingNotice {
+                pendingMeetingNotice = nil
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.meetingNotice(n) }
+            }
         }
+    }
+
+    // MARK: meetings
+
+    private func meetingPhase(_ p: MeetingController.Phase) {
+        refreshIcon()
+        captureHidden = p != .idle && UserDefaults.standard.bool(forKey: Key.meetingHideFromCapture)
+        flowBar.hideFromCapture(captureHidden)
+        for w in [mainWindow, settingsWindow] { w?.sharingType = captureHidden ? .none : .readOnly }
+        if p == .idle { flowBar.setMeeting(nil) } else { updateMeetingBar() }
+        mainModel.refresh += 1
+    }
+
+    private func updateMeetingBar() {
+        guard meetings.isActive else { return }
+        let micOnly = meetings.systemAudio == .silent || meetings.systemAudio == .unavailable
+        flowBar.setMeeting(.init(elapsed: meetings.elapsed, words: meetings.words, title: meetings.title,
+                                 wrappingUp: meetings.phase == .finishing, micOnly: micOnly))
+    }
+
+    /// Meeting notices wait while a dictation is using the flow bar.
+    private func meetingNotice(_ n: MeetingController.Notice) {
+        guard dictation.state == .idle else { pendingMeetingNotice = n; return }
+        let run = n.run
+        flowBar.model.onNoticeAction = { [weak self] in
+            run?()
+            self?.flowBar.set(.idle) // done with it (back to the meeting pill, if any)
+        }
+        flowBar.notice(n.text, action: n.run == nil ? nil : n.action, seconds: n.seconds)
+    }
+
+    private func meetingFinished(_ e: MeetingStore.Entry) {
+        mainModel.refresh += 1
+        let info = e.info
+        if info.status == .failed {
+            meetingNotice(.init(text: "The meeting transcript failed", action: "Open", run: { [weak self] in self?.showMeeting(e.id) }, seconds: 8))
+            return
+        }
+        if MeetingLimit.looksAccidental(words: info.wordCount) {
+            meetingNotice(.init(text: "Started by mistake? Only \(info.wordCount) words", action: "Discard", run: { [weak self] in
+                guard let self else { return }
+                if self.mainModel.openMeeting == e.id { self.mainModel.openMeeting = nil }
+                self.meetingStore.delete(e)
+            }, seconds: 10))
+            return
+        }
+        let why: String
+        switch info.stopReason {
+        case .sleep?: why = ": stopped when your Mac went to sleep"
+        case .maxLength?: why = ": stopped at the length limit"
+        case .lowDisk?: why = ": stopped, disk almost full"
+        default: why = ""
+        }
+        meetingNotice(.init(text: "Transcript ready\(why)", action: "Open", run: { [weak self] in self?.showMeeting(e.id) }, seconds: 8))
+        MeetingNotifier.post(title: "Transcript ready", body: "\(info.title) · \(MeetingDates.duration(info.durationSeconds)) · \(info.wordCount.formatted()) words",
+                             meetingID: e.id)
+    }
+
+    /// The Meetings tab, opened on one meeting.
+    func showMeeting(_ id: String) {
+        mainModel.openMeeting = id
+        mainModel.meetingTitleDraft = meetingStore.entry(id)?.info.title ?? ""
+        mainModel.meetingFind = ""
+        showMainWindow(.meetings)
+    }
+
+    // MARK: notifications
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        if let id = response.notification.request.content.userInfo["meeting"] as? String, !id.isEmpty {
+            DispatchQueue.main.async { self.showMeeting(id) }
+        }
+        completionHandler()
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list])
     }
 
     private func deliver(_ text: String, appName: String?) {
@@ -179,8 +290,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             handsFree.keyEquivalentModifierMask = [.shift, .option]
         }
         menu.addItem(handsFree)
+        let meeting: NSMenuItem
+        switch meetings.phase {
+        case .idle: meeting = item("Start meeting recording", #selector(toggleMeeting))
+        case .recording: meeting = item("Stop meeting recording (\(FlowBarView.clock(meetings.elapsed)))", #selector(toggleMeeting))
+        case .finishing:
+            meeting = NSMenuItem(title: "Transcribing the meeting…", action: nil, keyEquivalent: "")
+            meeting.isEnabled = false
+        }
+        if meetings.phase != .finishing, KeyMonitor.meetingShortcutOn { // a hint; the shortcut works everywhere
+            meeting.keyEquivalent = "r"
+            meeting.keyEquivalentModifierMask = [.control, .option]
+        }
+        menu.addItem(meeting)
         menu.addItem(item(keys.isPaused ? "Resume \(TriggerKey.current.title)" : "Pause \(TriggerKey.current.title) for 1 hour", #selector(togglePause)))
         menu.addItem(.separator())
+        menu.addItem(item("Meetings…", #selector(openMeetings)))
         menu.addItem(item("Open VoiceType…", #selector(openMain), key: ","))
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
@@ -289,15 +414,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openMain() { showMainWindow() }
 
+    @objc private func openMeetings() { showMainWindow(.meetings) }
+
+    @objc private func toggleMeeting() { meetings.toggle() }
+
     @objc func togglePause() {
         keys.pausedUntil = keys.isPaused ? nil : Date().addingTimeInterval(3600)
     }
 
-    private func setIcon(listening: Bool) {
-        let img = NSImage(systemSymbolName: listening ? "mic.fill" : "mic", accessibilityDescription: "VoiceType")
+    /// Red mic while dictating, a red record symbol while a meeting records.
+    private func refreshIcon() {
+        let listening = dictation.state == .listening
+        let meeting = meetings.phase == .recording
+        let img = NSImage(systemSymbolName: listening ? "mic.fill" : meeting ? "record.circle" : "mic", accessibilityDescription: "VoiceType")
         img?.isTemplate = true
         statusItem.button?.image = img
-        statusItem.button?.contentTintColor = listening ? .systemRed : nil
+        statusItem.button?.contentTintColor = listening || meeting ? .systemRed : nil
     }
 
     // MARK: windows
@@ -328,6 +460,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             w.setFrameAutosaveName("VoiceTypeMainV2") // V2: the redesigned, smaller window
             mainWindow = w
         }
+        mainWindow?.sharingType = captureHidden ? .none : .readOnly
         mainToolbar.sync()
         mainModel.refresh += 1
         NSApp.activate(ignoringOtherApps: true)
@@ -346,6 +479,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             w.setFrameAutosaveName("VoiceTypeSettings")
             settingsWindow = w
         }
+        settingsWindow?.sharingType = captureHidden ? .none : .readOnly
         mainModel.refresh += 1
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)

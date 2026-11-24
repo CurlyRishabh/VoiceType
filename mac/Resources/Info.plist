@@ -16,7 +16,10 @@
     <!-- Menu-bar app: no Dock icon -->
     <key>LSUIElement</key><true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>VoiceType turns your speech into text on this Mac. Audio is processed locally and discarded after transcription; the app has no network access.</string>
+    <string>VoiceType turns your speech into text on this Mac. Dictation audio is discarded after transcription; meeting audio stays in your meetings folder only if you choose to keep it. The app has no network access.</string>
+    <!-- Meeting recording: a Core Audio process tap on other apps' sound (the people on a call). -->
+    <key>NSAudioCaptureUsageDescription</key>
+    <string>VoiceType records the sound of other apps while you record a meeting, so it can transcribe the other people on the call. Everything stays on this Mac; the app has no network access.</string>
     <key>NSHumanReadableCopyright</key><string>Private, offline dictation. Personal build.</string>
 </dict>
 </plist>

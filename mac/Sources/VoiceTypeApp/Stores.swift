@@ -23,6 +23,13 @@ enum Key {
     static let flowBarIdle = "flow_bar_idle"    // show the idle sliver (off unless turned on in Advanced)
     static let onboardingDone = "onboarding_done"
     static let onboardingStep = "onboarding_step"  // resume setup after macOS "Quit & Reopen"
+    static let meetingShortcut = "meeting_shortcut"          // ⌃⌥R starts and stops a meeting recording
+    static let meetingMaxMinutes = "meeting_max_minutes"     // 30 | 60 | 120 | 180
+    static let meetingKeepAudio = "meeting_keep_audio"       // keep mic.wav / system.wav after transcription
+    static let meetingHideFromCapture = "meeting_hide_from_capture" // flow bar + windows hidden from screen sharing while recording
+    static let meetingEchoFilter = "meeting_echo_filter"     // drop my mic's echo of the others (no headphones)
+    static let meetingConsentShown = "meeting_consent_shown"
+    static let systemAudioState = "system_audio_state"       // what the last meeting's system audio did: ok | silent | unavailable
     static func style(_ c: AppCategory) -> String { "style_\(c.rawValue)" }
 }
 
@@ -36,6 +43,8 @@ enum AppSettings {
             Key.capitalize: true, Key.finalPunct: true, Key.polish: true, Key.polishStyle: "casual",
             Key.hotkey: 0, Key.history: true, Key.keepRecordings: false, Key.showHUD: true,
             Key.trigger: "fn", Key.flowBarIdle: false, Key.handsFreeShortcut: true, Key.sounds: true, Key.onboardingDone: false,
+            Key.meetingShortcut: true, Key.meetingMaxMinutes: MeetingLimit.defaultMinutes, Key.meetingKeepAudio: false,
+            Key.meetingHideFromCapture: true, Key.meetingEchoFilter: true, Key.meetingConsentShown: false,
             Key.style(.messages): StyleChoice.casual.rawValue, Key.style(.email): StyleChoice.formal.rawValue,
             Key.style(.notes): StyleChoice.notes.rawValue, Key.style(.other): StyleChoice.off.rawValue,
         ])
@@ -72,6 +81,16 @@ enum AppSettings {
         if s.kind == .hindiEnglish, !models.isReady(.whisper), models.isReady(.moonshine) { s.kind = .fastEnglish }
         if s.kind == .fastEnglish, !models.isReady(.moonshine), models.isReady(.whisper) { s.kind = .hindiEnglish }
         return s
+    }
+
+    /// The engine for meetings: Whisper (whisper.cpp when imported) in the language setting. Never
+    /// "Translate to English": a meeting is transcribed as spoken. Only Moonshine imported: English
+    /// meetings with chunk-level times. nil when no model can do it.
+    static func meetingSpec(_ models: ModelStore) -> EngineSpec? {
+        let language = d.string(forKey: Key.language) ?? "en"
+        if models.isReady(.whisper) { return EngineSpec(kind: .hindiEnglish, language: language == "auto" ? "" : language) }
+        if language == "en", models.isReady(.moonshine) { return EngineSpec(kind: .fastEnglish, language: "en") }
+        return nil
     }
 
     static var dictionary: PersonalDictionary {

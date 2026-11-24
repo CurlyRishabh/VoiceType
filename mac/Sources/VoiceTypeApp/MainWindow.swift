@@ -8,12 +8,13 @@ import VoiceTypeCore
 /// has no SwiftUI macro plugin).
 final class MainModel: ObservableObject {
     enum Section: Int, CaseIterable, Identifiable {
-        case home, history, dictionary, styles
+        case home, history, meetings, dictionary, styles
         var id: Int { rawValue }
         var title: String {
             switch self {
             case .home: return "Home"
             case .history: return "History"
+            case .meetings: return "Meetings"
             case .dictionary: return "Dictionary"
             case .styles: return "Styles"
             }
@@ -33,6 +34,14 @@ final class MainModel: ObservableObject {
     @Published var confirmClearHistory = false
     /// The History row under the pointer (its Copy button shows).
     @Published var hoveredHistory: UUID?
+    // Meetings tab
+    @Published var meetingQuery = ""
+    /// The meeting open in the detail view (its folder name); nil = the list.
+    @Published var openMeeting: String?
+    @Published var meetingTitleDraft = ""
+    @Published var meetingFind = ""
+    @Published var meetingFindIndex = 0
+    @Published var confirmDeleteMeeting = false
 }
 
 /// The main window's toolbar: the four tabs in the middle, Settings on the right.
@@ -113,6 +122,7 @@ struct MainView: View {
                 switch model.section {
                 case .home: HomeView(app: app, model: model, history: app.history)
                 case .history: HistoryView(model: model, history: app.history)
+                case .meetings: MeetingsView(app: app, model: model, store: app.meetingStore, meetings: app.meetings)
                 case .dictionary: DictionaryView(model: model)
                 case .styles: StylesView(app: app, model: model)
                 }
@@ -680,6 +690,11 @@ struct SettingsPane: View {
     @AppStorage(Key.flowBarIdle) var flowBarIdle = false
     @AppStorage(Key.history) var historyOn = true
     @AppStorage(Key.keepRecordings) var keepRecordings = false
+    @AppStorage(Key.meetingShortcut) var meetingShortcut = true
+    @AppStorage(Key.meetingMaxMinutes) var meetingMaxMinutes = MeetingLimit.defaultMinutes
+    @AppStorage(Key.meetingKeepAudio) var meetingKeepAudio = false
+    @AppStorage(Key.meetingHideFromCapture) var meetingHideFromCapture = true
+    @AppStorage(Key.meetingEchoFilter) var meetingEchoFilter = true
 
     private struct Issue: Identifiable {
         let id: String
@@ -797,6 +812,7 @@ struct SettingsPane: View {
                 }
                 if !model.importReport.isEmpty { Text(model.importReport).font(.caption).textSelection(.enabled) }
             }
+            meetingsSection
             Section {
                 Toggle("Save history on this Mac", isOn: $historyOn)
                 HStack {
@@ -848,11 +864,68 @@ struct SettingsPane: View {
         }
         .onChange(of: trigger) { _ in app.applyTrigger(); model.refresh += 1 }
         .onChange(of: handsFreeShortcut) { _ in app.applyTrigger() }
+        .onChange(of: meetingShortcut) { app.applyTrigger() }
         .onChange(of: language) { _ in app.dictation.warmUp(); model.refresh += 1 }
         .onChange(of: translate) { _ in app.dictation.warmUp() }
         .onChange(of: engine) { _ in model.refresh += 1 }
         .onChange(of: flowBarIdle) { _ in app.flowBar.refreshIdleVisibility() }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in model.refresh += 1 }
+    }
+
+    private var meetingsSection: some View {
+        Section {
+            Toggle(isOn: $meetingShortcut) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Meeting shortcut: \(KeyMonitor.meetingShortcutTitle)")
+                    Text("Starts and stops a meeting recording from any app. Also in the menu bar and the Meetings tab.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+            }
+            Picker("Maximum length", selection: $meetingMaxMinutes) {
+                ForEach(MeetingLimit.choices, id: \.self) { Text(MeetingLimit.title($0)).tag($0) }
+            }
+            Toggle(isOn: $meetingEchoFilter) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Remove echo when not using headphones")
+                    Text("Without headphones your mic also hears the others. Drops those repeated lines from Me.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+            }
+            Toggle(isOn: $meetingHideFromCapture) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Hide from screen sharing while recording")
+                    Text("The flow bar and VoiceType’s windows don’t appear in screen shares or screen recordings.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+            }
+            Toggle(isOn: $meetingKeepAudio) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Keep audio after transcription")
+                    Text("Off: mic.wav and system.wav are deleted once the transcript is saved (about 115 MB an hour each).")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+            }
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("System audio (the other people)")
+                    Text(SystemAudioPermission.statusText).font(.caption)
+                        .foregroundColor(SystemAudioPermission.lastState == .ok ? .secondary : .orange)
+                }
+                Spacer()
+                Button("Turn on…") { SystemAudioPermission.openSettings() }
+            }
+            HStack {
+                Text("Meetings folder")
+                Spacer()
+                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([app.meetingStore.root]) }
+            }
+        } header: {
+            Text("Meetings")
+        } footer: {
+            Text("Your mic is “Me”, the sound of other apps is “Others”. Both are transcribed on this Mac while you talk.")
+                .font(.caption).foregroundColor(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(.leading, 10)
+        }
     }
 
     @ViewBuilder private var advanced: some View {
