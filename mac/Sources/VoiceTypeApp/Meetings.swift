@@ -588,6 +588,10 @@ final class MeetingController: ObservableObject {
             if info.status.hasTranscript { try? MeetingFiles.writeMarkdown(MeetingFiles.readSegments(folder), info: info, to: folder) }
         }
         noteDraft = ""
+        // Notes added while wrapping up (after transcript.md may have been written): write it again.
+        if info.status.hasTranscript, !MeetingFiles.readNotes(folder).isEmpty {
+            try? MeetingFiles.writeMarkdown(MeetingFiles.readSegments(folder), info: info, to: folder)
+        }
         pipeline = nil
         liveSegments = []
         notes = []
@@ -684,10 +688,15 @@ final class MeetingController: ObservableObject {
             let echo = UserDefaults.standard.bool(forKey: Key.meetingEchoFilter)
             let base = info
             p.finish { [weak self] outcome in
-                let failedAll = outcome.chunks > 0 && outcome.failedChunks >= outcome.chunks
+                // A re-transcribe replaces the transcript only with a complete one, or a partial one
+                // with at least as many words; otherwise the previous transcript stays as it was.
+                let status = MeetingInfo.Status.after(chunks: outcome.chunks, failed: outcome.failedChunks)
+                let words = MeetingTranscript.wordCount(outcome.segments)
+                let failedAll = previous.map { p in
+                    status == .failed || (outcome.chunks == 0 && p.wordCount > 0) || (status == .partial && words < p.wordCount)
+                } ?? false
                 if var previous, failedAll {
                     if let onDisk = MeetingFiles.readInfo(entry.folder) { previous.title = onDisk.title }
-                    previous.error = nil
                     try? MeetingFiles.writeInfo(previous, to: entry.folder)
                 } else {
                     MeetingPipeline.write(outcome, info: base, folder: entry.folder, echoFilter: echo, keepAudio: keepAudio, stoppedAt: nil)
@@ -710,15 +719,17 @@ final class MeetingController: ObservableObject {
                 }
             }
         } catch {
+            retranscribingID = nil
             if let previous {
                 try? MeetingFiles.writeInfo(previous, to: entry.folder)
                 notice(.init(text: "Couldn’t re-transcribe: \(error.localizedDescription)", seconds: 8))
-            } else {
-                info.status = .failed
-                info.error = error.localizedDescription
-                try? MeetingFiles.writeInfo(info, to: entry.folder)
+                store.refresh()
+                recoverInterrupted()
+                return
             }
-            retranscribingID = nil
+            info.status = .failed
+            info.error = error.localizedDescription
+            try? MeetingFiles.writeInfo(info, to: entry.folder)
             store.refresh()
             done(store.entry(entry.id))
         }

@@ -278,21 +278,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     // MARK: learning from corrections
 
     private func learned(_ entries: [PersonalDictionary.Entry]) {
-        var dict = AppSettings.dictionary
-        for e in entries { dict = dict.plus(e) }
+        let before = AppSettings.dictionary
+        var dict = before
+        for e in entries {
+            // Undoing an earlier lesson ("Rishabh" back to "Rishab"): that entry goes, or it would flip it back.
+            dict = PersonalDictionary(dict.entries.filter { $0.to.lowercased() != e.from.lowercased() })
+            dict = dict.plus(e)
+        }
         AppSettings.dictionary = dict
+        let added = dict
         Diagnostics.log("learned \(entries.count) dictionary entr\(entries.count == 1 ? "y" : "ies")")
         let names = entries.map { "“\($0.to)”" }.joined(separator: ", ")
         let undo = { [weak self] in
-            var d = AppSettings.dictionary
-            for e in entries { d = d.minus(e.from) }
-            AppSettings.dictionary = d
+            // Back to exactly what it was, unless the Dictionary was edited since (then only these go).
+            if AppSettings.dictionary == added {
+                AppSettings.dictionary = before
+            } else {
+                var d = AppSettings.dictionary
+                for e in entries { d = d.minus(e.from) }
+                AppSettings.dictionary = d
+            }
             self?.mainModel.refresh += 1
         }
         mainModel.refresh += 1
-        if dictation.state == .idle && !meetings.isActive {
-            flowBar.notice("Added \(names) to Dictionary", action: "Undo", onAction: undo)
-        }
+        // Through the meeting-notice path: it waits while a dictation has the flow bar.
+        meetingNotice(.init(text: "Added \(names) to Dictionary", action: "Undo", run: undo, seconds: 10))
     }
 
     // MARK: calls in other apps
@@ -324,13 +334,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             if missedCall == app { missedCall = nil }
             guard meetings.isRecording else { return }
             // Only when the others have also gone quiet: an app that releases the mic on mute isn't a hang-up.
-            if mode == "auto" && meetings.startedForCall && meetings.secondsSinceOthersHeard > 20 {
-                meetings.stop(.callEnded)
+            if mode == "auto" && meetings.startedForCall {
+                stopWhenCallIsOver(app, checks: 0)
             } else {
                 meetingNotice(.init(text: "Call in \(app.name) ended. Stop recording?", action: "Stop",
                                     run: { [weak self] in self?.meetings.stop() }, seconds: 15))
             }
         }
+    }
+
+    /// Auto-recorded call over: stop once the others have also been quiet for 20 s (people say
+    /// goodbye after hanging up the mic in some apps). Checks every 10 s for up to 3 minutes; a
+    /// call that comes back, or a manual stop, ends the checking.
+    private func stopWhenCallIsOver(_ app: CallApps.App, checks: Int) {
+        guard meetings.isRecording, meetings.startedForCall, calls.activeCall == nil else { return }
+        if meetings.secondsSinceOthersHeard > 20 { meetings.stop(.callEnded); return }
+        guard checks < 18 else {
+            meetingNotice(.init(text: "Call in \(app.name) ended. Stop recording?", action: "Stop",
+                                run: { [weak self] in self?.meetings.stop() }, seconds: 15))
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in self?.stopWhenCallIsOver(app, checks: checks + 1) }
     }
 
     /// The Meetings tab, opened on one meeting.
@@ -359,10 +383,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private func deliver(_ text: String, appName: String?) {
         lastText = text
         lastApp = appName
-        let field = Inserter.focusedField()
+        corrections.finish() // the last dictation's edits are judged before this one lands
+        let field = UserDefaults.standard.bool(forKey: Key.learnCorrections) ? Inserter.focusedField() : nil
         switch Inserter.insert(text) {
         case .pasted:
-            if let field, UserDefaults.standard.bool(forKey: Key.learnCorrections) {
+            if let field {
                 corrections.watch(field, typed: text) { [weak self] learned in self?.learned(learned) }
             }
         case .copiedOnly:

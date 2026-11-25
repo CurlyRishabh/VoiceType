@@ -53,6 +53,10 @@ enum Inserter {
         let after: String
     }
 
+    /// Fields longer than this (a terminal, a long document) aren't watched: reading them every
+    /// few seconds would cost more than it is worth.
+    static let maxWatchedCharacters = 20_000
+
     static func focusedField() -> Field? {
         guard isTrusted else { return nil }
         let system = AXUIElementCreateSystemWide()
@@ -65,9 +69,29 @@ enum Inserter {
         var subrole: CFTypeRef?
         AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subrole)
         if (subrole as? String) == (kAXSecureTextFieldSubrole as String) { return nil }
-        let (before, after) = focusedContext()
-        guard let before, let after, value(of: element) != nil else { return nil }
-        return Field(element: element, before: before, after: after)
+        var count: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXNumberOfCharactersAttribute as CFString, &count) == .success,
+           let n = count as? Int, n > maxWatchedCharacters { return nil }
+        var rangeRef: CFTypeRef?
+        guard let text = value(of: element), text.utf16.count <= maxWatchedCharacters,
+              AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &rangeRef) == .success,
+              let rv = rangeRef, CFGetTypeID(rv) == AXValueGetTypeID() else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(rv as! AXValue, .cfRange, &range) else { return nil }
+        let ns = text as NSString
+        let start = max(0, min(range.location, ns.length))
+        let end = max(start, min(range.location + range.length, ns.length))
+        return Field(element: element, before: ns.substring(to: start), after: ns.substring(from: end))
+    }
+
+    /// Whether `element` still has the keyboard focus.
+    static func isFocused(_ element: AXUIElement) -> Bool {
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.25)
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+              let el = focused else { return false }
+        return CFEqual(el, element)
     }
 
     /// A field's whole text (nil if it can't be read any more).

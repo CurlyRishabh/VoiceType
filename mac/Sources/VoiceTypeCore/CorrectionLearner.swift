@@ -11,8 +11,11 @@ public enum CorrectionLearner {
     /// The edited dictation may grow or shrink by this many words and still be compared.
     public static let maxDrift = 4
 
+    /// `isWord`: whether a word is ordinary vocabulary (the app asks the system spell checker).
+    /// Changing one real word into another is editing, not a misheard name, and is never learned.
     public static func corrections(typed: String, before: String, after: String, now: String,
-                                   known: PersonalDictionary = .empty) -> [PersonalDictionary.Entry] {
+                                   known: PersonalDictionary = .empty,
+                                   isWord: (String) -> Bool = { _ in false }) -> [PersonalDictionary.Entry] {
         // What is left of the dictation: the field minus the untouched text around it.
         guard now.count >= before.count, now.hasPrefix(before) else { return [] }
         var middle = String(now.dropFirst(before.count))
@@ -28,11 +31,32 @@ public enum CorrectionLearner {
         for (old, new) in substitutions(a, b) {
             guard old.count <= maxRun, new.count <= maxRun else { continue }
             let from = old.joined(separator: " "), to = new.joined(separator: " ")
-            guard from != to, similar(from, to), to.contains(where: \.isLetter) else { continue }
+            guard from != to, similar(from, to), to.contains(where: \.isLetter),
+                  isRespelling(old, new, isWord: isWord) else { continue }
             if known.entries.contains(where: { $0.from.lowercased() == from.lowercased() && $0.to == to }) { continue }
             out.append(.init(from, to))
         }
         return Array(out.prefix(3))
+    }
+
+    /// A misheard word fixed, not an edit: joined/split spelling ("get hub" → "GitHub"), a
+    /// capitalised name or product ("kubernetes" → "Kubernetes", "iphone" → "iPhone"), or a new
+    /// spelling of something that isn't ordinary vocabulary ("Rishab" → "Rishabh"). Not: sentence
+    /// capitals ("the" → "The"), grammar ("fix" → "fixes"), or swapping real words ("affect" → "effect").
+    static func isRespelling(_ old: [String], _ new: [String], isWord: (String) -> Bool) -> Bool {
+        let from = old.joined(separator: " "), to = new.joined(separator: " ")
+        let f = from.lowercased(), t = to.lowercased()
+        let sameLetters = f.filter { !$0.isWhitespace } == t.filter { !$0.isWhitespace }
+        if sameLetters && old.count != new.count { return true } // joined or split
+        if f == t { // capitals only
+            let inner = new.contains { $0.dropFirst().contains(where: \.isUppercase) } // GitHub, iPhone, McDonald
+            return inner || !old.allSatisfy { isWord($0.lowercased()) }
+        }
+        // A word plus or minus a grammatical ending ("fix" → "fixes", "walked" → "walk").
+        let endings = ["s", "es", "ed", "d", "ing", "er", "ly", "'s", "’s"]
+        if endings.contains(where: { t == f + $0 || f == t + $0 }) { return false }
+        let oldReal = old.allSatisfy { isWord($0.lowercased()) }, newReal = new.allSatisfy { isWord($0.lowercased()) }
+        return !(oldReal && newReal)
     }
 
     /// Words with their edge punctuation removed ("GitHub," → "GitHub").
