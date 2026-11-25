@@ -61,6 +61,18 @@ public struct TranscriptLine: Equatable, Sendable, Identifiable {
     public var end: Double
     public var channel: MeetingChannel
     public var text: String
+    /// A note typed by Me during (or after) the meeting, not speech.
+    public var isNote = false
+
+    /// "Me", "Others" or "My note".
+    public var label: String { isNote ? "My note" : channel.label }
+}
+
+/// A note typed while the meeting runs (or later), at `at` seconds into the meeting.
+public struct MeetingNote: Codable, Equatable, Sendable {
+    public var at: Double
+    public var text: String
+    public init(at: Double, text: String) { self.at = at; self.text = text }
 }
 
 public enum MeetingTranscript {
@@ -86,6 +98,29 @@ public enum MeetingTranscript {
                 out.append(TranscriptLine(id: out.count, start: s.start, end: s.end, channel: s.channel, text: text))
             }
         }
+        return out
+    }
+
+    /// Speech lines with the typed notes placed at their times (a note goes after speech that
+    /// starts at the same moment). Ids are positions in the result.
+    public static func lines(_ segments: [TranscriptSegment], notes: [MeetingNote]) -> [TranscriptLine] {
+        let speech = lines(segments)
+        guard !notes.isEmpty else { return speech }
+        var out: [TranscriptLine] = []
+        var pending = notes.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.sorted { $0.at < $1.at }[...]
+        func flush(before t: Double?) {
+            while let n = pending.first, t.map({ n.at < $0 }) ?? true {
+                out.append(TranscriptLine(id: 0, start: n.at, end: n.at, channel: .me,
+                                          text: n.text.trimmingCharacters(in: .whitespacesAndNewlines), isNote: true))
+                pending.removeFirst()
+            }
+        }
+        for l in speech {
+            flush(before: l.start)
+            out.append(l)
+        }
+        flush(before: nil)
+        for i in out.indices { out[i].id = i }
         return out
     }
 

@@ -25,7 +25,9 @@ enum Key {
     static let onboardingStep = "onboarding_step"  // resume setup after macOS "Quit & Reopen"
     static let meetingShortcut = "meeting_shortcut"          // ⌃⌥R starts and stops a meeting recording
     static let meetingMaxMinutes = "meeting_max_minutes"     // 30 | 60 | 120 | 180
-    static let meetingKeepAudio = "meeting_keep_audio"       // keep mic.wav / system.wav after transcription
+    static let meetingKeepAudio = "meeting_keep_audio"       // (old) keep audio forever; read once to migrate
+    static let meetingAudioDays = "meeting_audio_days"       // AudioRetention: 0 delete now, N days, -1 keep
+    static let meetingCallDetection = "meeting_call_detection" // off | ask | auto
     static let meetingHideFromCapture = "meeting_hide_from_capture" // flow bar + windows hidden from screen sharing while recording
     static let meetingEchoFilter = "meeting_echo_filter"     // drop my mic's echo of the others (no headphones)
     static let meetingConsentShown = "meeting_consent_shown"
@@ -43,7 +45,7 @@ enum AppSettings {
             Key.capitalize: true, Key.finalPunct: true, Key.polish: true, Key.polishStyle: "casual",
             Key.hotkey: 0, Key.history: true, Key.keepRecordings: false, Key.showHUD: true,
             Key.trigger: "fn", Key.flowBarIdle: false, Key.handsFreeShortcut: true, Key.sounds: true, Key.onboardingDone: false,
-            Key.meetingShortcut: true, Key.meetingMaxMinutes: MeetingLimit.defaultMinutes, Key.meetingKeepAudio: false,
+            Key.meetingShortcut: true, Key.meetingMaxMinutes: MeetingLimit.defaultMinutes, Key.meetingKeepAudio: false, Key.meetingCallDetection: "ask",
             Key.meetingHideFromCapture: true, Key.meetingEchoFilter: true, Key.meetingConsentShown: false,
             Key.style(.messages): StyleChoice.casual.rawValue, Key.style(.email): StyleChoice.formal.rawValue,
             Key.style(.notes): StyleChoice.notes.rawValue, Key.style(.other): StyleChoice.off.rawValue,
@@ -86,12 +88,21 @@ enum AppSettings {
     /// The engine for meetings: Whisper (whisper.cpp when imported) in the language setting. Never
     /// "Translate to English": a meeting is transcribed as spoken. Only Moonshine imported: English
     /// meetings with chunk-level times. nil when no model can do it.
-    static func meetingSpec(_ models: ModelStore) -> EngineSpec? {
-        let language = d.string(forKey: Key.language) ?? "en"
+    /// `language`: "en", "hi" or "auto"; nil = the language setting.
+    static func meetingSpec(_ models: ModelStore, language: String? = nil) -> EngineSpec? {
+        let language = language ?? d.string(forKey: Key.language) ?? "en"
         if models.isReady(.whisper) { return EngineSpec(kind: .hindiEnglish, language: language == "auto" ? "" : language) }
         if language == "en", models.isReady(.moonshine) { return EngineSpec(kind: .fastEnglish, language: "en") }
         return nil
     }
+
+    /// Days meeting audio is kept (AudioRetention). Someone who had "Keep audio" on keeps it for good.
+    static var meetingAudioDays: Int {
+        if let n = d.object(forKey: Key.meetingAudioDays) as? Int { return n }
+        return d.bool(forKey: Key.meetingKeepAudio) ? -1 : AudioRetention.defaultDays
+    }
+
+    static var meetingKeepsAudio: Bool { AudioRetention.keeps(meetingAudioDays) }
 
     static var dictionary: PersonalDictionary {
         get { PersonalDictionary.parse(d.string(forKey: Key.dictionary)) }

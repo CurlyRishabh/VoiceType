@@ -18,7 +18,7 @@ public struct MeetingInfo: Codable, Equatable, Sendable {
         /// Whether the audio stays once the transcript is saved: only a complete one lets it go.
         public func keepsAudio(setting: Bool) -> Bool { setting || self != .ready }
     }
-    public enum StopReason: String, Codable, Sendable { case user, maxLength, sleep, lowDisk, writeError, quit, crash }
+    public enum StopReason: String, Codable, Sendable { case user, maxLength, sleep, lowDisk, writeError, quit, crash, callEnded }
     /// What the system-audio channel delivered. `silent` = only digital silence (permission denied,
     /// or nothing played at all); `unavailable` = the tap could not be created.
     public enum SystemAudio: String, Codable, Sendable { case unknown, ok, silent, unavailable }
@@ -94,8 +94,9 @@ public enum MeetingRender {
     public static let aiInstructions = """
     This is an automatic transcript of a meeting. "Me" is the person who recorded it; "Others" is everyone else on the call. \
     Please summarise it in a few sentences, then list the decisions made, the action items (with owner and due date when \
-    they were said) and the open questions. Cite the timestamp, like [00:12:34], for each point. Speech recognition can \
-    mishear names and numbers: flag anything that looks wrong instead of guessing.
+    they were said) and the open questions. Cite the timestamp, like [00:12:34], for each point. Lines marked "My note" were \
+    typed by Me during the meeting: treat them as what Me found important. Speech recognition can mishear names and \
+    numbers: flag anything that looks wrong instead of guessing.
     """
 
     static func formatter(_ format: String, _ timeZone: TimeZone) -> DateFormatter {
@@ -143,7 +144,7 @@ public enum MeetingRender {
     /// "[00:12:34] **Me:** text", one paragraph per line.
     public static func body(_ lines: [TranscriptLine]) -> String {
         guard !lines.isEmpty else { return "_No speech was transcribed._" }
-        return lines.map { "[\(MeetingTranscript.timestamp($0.start))] **\($0.channel.label):** \($0.text)" }.joined(separator: "\n\n")
+        return lines.map { "[\(MeetingTranscript.timestamp($0.start))] \($0.isNote ? "📝 " : "")**\($0.label):** \($0.text)" }.joined(separator: "\n\n")
     }
 
     /// The whole transcript.md: header, the instruction block for Claude/Codex, then the transcript.
@@ -198,6 +199,7 @@ public enum MeetingFiles {
     public static let infoFile = "meeting.json"
     public static let transcriptJSON = "transcript.json"
     public static let transcriptMarkdown = "transcript.md"
+    public static let notesFile = "notes.json"
 
     /// "2026-11-25 1402 Weekly sync". Characters Finder or the shell trip over are replaced.
     public static func folderName(start: Date, title: String, timeZone: TimeZone = .current) -> String {
@@ -268,7 +270,7 @@ public enum MeetingFiles {
     }
 
     public static func writeMarkdown(_ segments: [TranscriptSegment], info: MeetingInfo, to folder: URL, timeZone: TimeZone = .current) throws {
-        let md = MeetingRender.markdown(info, lines: MeetingTranscript.lines(segments), timeZone: timeZone)
+        let md = MeetingRender.markdown(info, lines: MeetingTranscript.lines(segments, notes: readNotes(folder)), timeZone: timeZone)
         try Data(md.utf8).write(to: folder.appendingPathComponent(transcriptMarkdown), options: .atomic)
     }
 
@@ -294,6 +296,15 @@ public enum MeetingFiles {
         return (info, file.segments)
     }
 
+    /// notes.json: what Me typed during or after the meeting. Empty when there is none.
+    public static func readNotes(_ folder: URL) -> [MeetingNote] {
+        (try? Data(contentsOf: folder.appendingPathComponent(notesFile))).flatMap { try? decoder.decode([MeetingNote].self, from: $0) } ?? []
+    }
+
+    public static func writeNotes(_ notes: [MeetingNote], to folder: URL) throws {
+        try encoder.encode(notes).write(to: folder.appendingPathComponent(notesFile), options: .atomic)
+    }
+
     public static func audioFiles(_ folder: URL) -> [URL] {
         MeetingChannel.allCases.map { folder.appendingPathComponent($0.fileName) }
             .filter { FileManager.default.fileExists(atPath: $0.path) }
@@ -301,5 +312,34 @@ public enum MeetingFiles {
 
     public static func deleteAudio(_ folder: URL) {
         audioFiles(folder).forEach { try? FileManager.default.removeItem(at: $0) }
+    }
+}
+
+/// How long meeting audio stays after the transcript is saved (Settings › Meetings).
+public enum AudioRetention {
+    /// Days; 0 = delete as soon as the transcript is saved, -1 = keep until the meeting is deleted.
+    public static let choices = [0, 1, 7, 30, -1]
+    public static let defaultDays = 7
+
+    public static func title(_ days: Int) -> String {
+        switch days {
+        case 0: return "Delete right away"
+        case -1: return "Keep until I delete the meeting"
+        case 1: return "1 day"
+        default: return "\(days) days"
+        }
+    }
+
+    /// Kept at all after transcription.
+    public static func keeps(_ days: Int) -> Bool { days != 0 }
+
+    /// The audio of a finished meeting whose time is up. Meetings being recorded or transcribed,
+    /// and ones without audio, never qualify; partial/failed ones keep theirs for the same period.
+    public static func expired(_ info: MeetingInfo, days: Int, now: Date = Date()) -> Bool {
+        guard days >= 0, info.audioKept, info.status != .recording, info.status != .transcribing else { return false }
+        // A partial or failed transcript's audio is what can fix it: never less than the default.
+        let days = info.status == .ready ? days : max(days, defaultDays)
+        let end = info.endedAt ?? info.startedAt.addingTimeInterval(info.durationSeconds)
+        return now.timeIntervalSince(end) >= Double(days) * 86_400
     }
 }

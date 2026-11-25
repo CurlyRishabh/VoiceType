@@ -692,7 +692,8 @@ struct SettingsPane: View {
     @AppStorage(Key.keepRecordings) var keepRecordings = false
     @AppStorage(Key.meetingShortcut) var meetingShortcut = true
     @AppStorage(Key.meetingMaxMinutes) var meetingMaxMinutes = MeetingLimit.defaultMinutes
-    @AppStorage(Key.meetingKeepAudio) var meetingKeepAudio = false
+    @AppStorage(Key.meetingAudioDays) var meetingAudioDays = AppSettings.meetingAudioDays
+    @AppStorage(Key.meetingCallDetection) var meetingCallDetection = "ask"
     @AppStorage(Key.meetingHideFromCapture) var meetingHideFromCapture = true
     @AppStorage(Key.meetingEchoFilter) var meetingEchoFilter = true
 
@@ -866,6 +867,8 @@ struct SettingsPane: View {
         .onChange(of: handsFreeShortcut) { _ in app.applyTrigger() }
         .onChange(of: meetingShortcut) { app.applyTrigger() }
         .onChange(of: meetingHideFromCapture) { app.applyCaptureHiding() }
+        .onChange(of: meetingCallDetection) { app.applyCallDetection() }
+        .onChange(of: meetingAudioDays) { if !app.meetings.isActive { app.meetings.purgeExpiredAudio() } }
         .onChange(of: language) { _ in app.dictation.warmUp(); model.refresh += 1 }
         .onChange(of: translate) { _ in app.dictation.warmUp() }
         .onChange(of: engine) { _ in model.refresh += 1 }
@@ -899,10 +902,23 @@ struct SettingsPane: View {
                         .font(.caption).foregroundColor(.secondary)
                 }
             }
-            Toggle(isOn: $meetingKeepAudio) {
+            Picker(selection: $meetingCallDetection) {
+                Text("Ask me").tag("ask")
+                Text("Start recording automatically").tag("auto")
+                Text("Do nothing").tag("off")
+            } label: {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Keep audio after transcription")
-                    Text("Off: mic.wav and system.wav are deleted once the transcript is saved (about 115 MB an hour each).")
+                    Text("When a call starts")
+                    Text("Zoom, Teams, Slack huddles, FaceTime, Webex, or a browser (Google Meet) using the mic for a few seconds. Automatic recordings also stop when the call ends.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+            }
+            Picker(selection: $meetingAudioDays) {
+                ForEach(AudioRetention.choices, id: \.self) { Text(AudioRetention.title($0)).tag($0) }
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Keep meeting audio")
+                    Text("Kept audio lets you re-transcribe a meeting (about 115 MB an hour per side). Transcripts and notes are never deleted automatically.")
                         .font(.caption).foregroundColor(.secondary)
                 }
             }

@@ -41,6 +41,8 @@ final class MeetingPipeline {
     var onLevel: ((MeetingChannel, Float) -> Void)?
     var onSilence: ((MeetingChannel, SilenceWatch.State) -> Void)?
     var onWords: ((Int) -> Void)?
+    /// Segments just transcribed (live view), cleaned but before echo de-dup.
+    var onSegments: (([TranscriptSegment]) -> Void)?
     /// Audio could not be written (disk full?): the meeting must stop. Once.
     var onWriteFailure: ((MeetingChannel, String) -> Void)?
 
@@ -200,6 +202,7 @@ final class MeetingPipeline {
         previous[job.channel] = next
         guard !kept.isEmpty else { return }
         if !r.language.isEmpty, !languages.contains(r.language) { languages.append(r.language) }
+        let before = segments.count
         for t in kept {
             let text = config.cleanup.clean(t.text, previous: lastClean[job.channel])
             guard !text.isEmpty else { continue }
@@ -210,6 +213,7 @@ final class MeetingPipeline {
         }
         let w = words
         onWords?(w)
+        if segments.count > before { onSegments?(Array(segments[before...])) }
     }
 
     private func checkDone() {

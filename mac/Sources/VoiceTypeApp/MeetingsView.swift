@@ -20,7 +20,7 @@ struct MeetingsView: View {
     private var list: some View {
         let items = store.entries.filter { store.matches($0, model.meetingQuery) }
         return VStack(spacing: 0) {
-            RecordCard(meetings: meetings).padding(.horizontal, 24).padding(.top, 16)
+            RecordCard(meetings: meetings) { if let id = meetings.currentID { open(id) } }.padding(.horizontal, 24).padding(.top, 16)
             if !store.entries.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundColor(.secondary).accessibilityHidden(true)
@@ -61,6 +61,10 @@ struct MeetingsView: View {
         }
     }
 
+    private func open(_ id: String) {
+        if let e = store.entry(id) { open(e) }
+    }
+
     private func open(_ e: MeetingStore.Entry) {
         model.meetingTitleDraft = e.info.title
         model.meetingFind = ""
@@ -88,6 +92,8 @@ enum MeetingActions {
 /// Start / stop at the top of the tab, with what is going on.
 private struct RecordCard: View {
     @ObservedObject var meetings: MeetingController
+    /// Opens the meeting being recorded (its live transcript).
+    var showLive: () -> Void = {}
     private let red = Color(red: 1, green: 0.353, blue: 0.373)
 
     var body: some View {
@@ -111,6 +117,7 @@ private struct RecordCard: View {
                             .font(.system(size: 13)).foregroundColor(.secondary)
                     }
                     Spacer(minLength: 8)
+                    Button("Live transcript") { showLive() }
                     Button("Stop") { meetings.stop() } // no default-button shortcut: Return in a text field must not end the meeting
                 case .finishing:
                     ProgressView().controlSize(.small)
@@ -193,6 +200,7 @@ private struct MeetingDetailView: View {
     let entry: MeetingStore.Entry
 
     private var isCurrent: Bool { entry.id == meetings.currentID }
+    private var hasAudio: Bool { !isCurrent && !MeetingFiles.audioFiles(entry.folder).isEmpty }
 
     var body: some View {
         let info = entry.info
@@ -218,6 +226,19 @@ private struct MeetingDetailView: View {
                     .disabled(!info.status.hasTranscript)
                     .help("The transcript with instructions for Claude or Codex: summary, decisions, action items, open questions, with timestamps")
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([entry.folder.appendingPathComponent(MeetingFiles.transcriptMarkdown)]) }
+                if hasAudio {
+                    Menu("Re-transcribe") {
+                        Button("English") { meetings.retranscribe(entry, language: "en") }
+                        Button("Hindi") { meetings.retranscribe(entry, language: "hi") }
+                        Button("English + Hindi") { meetings.retranscribe(entry, language: "auto") }
+                    }
+                    .fixedSize()
+                    .disabled(!meetings.canRetranscribe(entry))
+                    .help("Transcribe the kept audio again, for example in another language. Your notes stay.")
+                    Button("Delete audio") { meetings.deleteAudio(entry) }
+                        .disabled(isCurrent || entry.id == meetings.recoveringID)
+                        .help("Delete mic.wav and system.wav now. The transcript and notes stay; re-transcribing is no longer possible.")
+                }
                 Spacer()
                 // Anything but the meeting being recorded or transcribed right now (a crashed one can go).
                 Button("Delete…", role: .destructive) { model.confirmDeleteMeeting = true }
@@ -301,8 +322,8 @@ private struct MeetingDetailView: View {
     @ViewBuilder
     private func content(_ info: MeetingInfo, _ lines: [TranscriptLine], matches: Set<Int>, current: Int?) -> some View {
         switch info.status {
-        case .recording where isCurrent:
-            placeholder("Recording", "The transcript is being written as you talk and is ready a few seconds after you stop.")
+        case .recording where isCurrent, .transcribing where isCurrent:
+            LiveTranscript(meetings: meetings)
         case .recording, .transcribing:
             if isCurrent || entry.id == meetings.recoveringID {
                 VStack(spacing: 10) {
@@ -331,6 +352,7 @@ private struct MeetingDetailView: View {
                     .onChange(of: current) { _, c in if let c { withAnimation { proxy.scrollTo(c, anchor: .center) } } }
                 }
             }
+            NoteField(placeholder: "Add a note to this meeting (Return to save)") { store.addNote(entry, $0) }
         }
     }
 
@@ -356,11 +378,11 @@ private struct LineRow: View {
             Text(MeetingTranscript.timestamp(line.start))
                 .font(.system(size: 11).monospacedDigit()).foregroundColor(.secondary)
                 .frame(width: 58, alignment: .leading)
-            Text(line.channel.label)
+            Text(line.isNote ? "Note" : line.label)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(line.channel == .me ? Mist.accent : Self.others)
+                .foregroundColor(line.isNote ? .orange : line.channel == .me ? Mist.accent : Self.others)
                 .frame(width: 48, alignment: .leading)
-            Text(line.text).font(.system(size: 14)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            Text(line.text).font(.system(size: 14)).italic(line.isNote).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
@@ -368,4 +390,81 @@ private struct LineRow: View {
             highlight == .current ? Mist.accent.opacity(0.2) : highlight == .match ? Mist.tile : Color.clear))
         .accessibilityElement(children: .combine)
     }
+}
+
+/// The meeting being recorded: what has been transcribed so far (a few seconds behind the talk),
+/// following the newest line unless you scroll up, with a box for notes.
+private struct LiveTranscript: View {
+    @ObservedObject var meetings: MeetingController
+    @StateObject private var ui = LiveUI()
+
+    var body: some View {
+        let echo = UserDefaults.standard.bool(forKey: Key.meetingEchoFilter)
+        let segments = echo ? EchoFilter.apply(meetings.liveSegments).segments : meetings.liveSegments
+        let lines = MeetingTranscript.lines(segments, notes: meetings.notes)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                if meetings.phase == .finishing {
+                    ProgressView().controlSize(.small)
+                    Text("Wrapping up: the last few seconds are being transcribed").font(.system(size: 12)).foregroundColor(.secondary)
+                } else {
+                    Circle().fill(Color.red).frame(width: 8, height: 8).accessibilityHidden(true)
+                    Text("Live · a few seconds behind").font(.system(size: 12)).foregroundColor(.secondary)
+                }
+                Spacer()
+                Toggle("Follow", isOn: $ui.follow).toggleStyle(.checkbox).font(.system(size: 12))
+            }
+            if lines.isEmpty {
+                VStack(spacing: 6) {
+                    Text("Listening…").font(.system(size: 15, weight: .semibold))
+                    Text("Lines appear here a few seconds after each sentence.").font(.system(size: 13)).foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            ForEach(lines) { LineRow(line: $0, highlight: .none).id($0.id) }
+                            Color.clear.frame(height: 1).id(-1)
+                        }
+                        .padding(.bottom, 8)
+                    }
+                    .onChange(of: lines.count) { _, _ in if ui.follow { withAnimation { proxy.scrollTo(-1, anchor: .bottom) } } }
+                    .onAppear { proxy.scrollTo(-1, anchor: .bottom) }
+                }
+            }
+            if meetings.phase == .recording {
+                NoteField(placeholder: "Type a note, Return to add it at this moment") { meetings.addNote($0) }
+            }
+        }
+    }
+}
+
+/// One line for typing a note; Return saves it and clears the box.
+private struct NoteField: View {
+    let placeholder: String
+    let save: (String) -> Void
+    @StateObject private var draft = LiveUI()
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "square.and.pencil").font(.system(size: 12)).foregroundColor(.orange).accessibilityHidden(true)
+            TextField(placeholder, text: $draft.text).textFieldStyle(.plain).font(.system(size: 13))
+                .onSubmit {
+                    let t = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !t.isEmpty else { return }
+                    save(t)
+                    draft.text = ""
+                }
+        }
+        .padding(.horizontal, 10).frame(height: 32)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Mist.card))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Mist.border))
+    }
+}
+
+/// View-local state (the app is built without the SwiftUI macro plugin, so no @State).
+private final class LiveUI: ObservableObject {
+    @Published var follow = true
+    @Published var text = ""
 }

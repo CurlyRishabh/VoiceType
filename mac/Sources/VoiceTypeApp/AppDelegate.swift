@@ -12,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     lazy var dictation = Dictation(models: models, speech: speech, polisher: polisher, history: history)
     let meetingStore = MeetingStore()
     lazy var meetings = MeetingController(models: models, speech: speech, store: meetingStore)
+    /// Notices calls starting and ending in other apps (Settings › Meetings › When a call starts).
+    let calls = CallDetector()
+    private var purgeTimer: Timer?
     let flowBar = FlowBar()
 
     private let keys = KeyMonitor()
@@ -47,6 +50,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         flowBar.model.onMeetingStop = { [weak self] in self?.meetings.stop() }
         flowBar.model.onCancel = { [weak self] in self?.send(.cancelButton) }
         flowBar.model.onOpen = { [weak self] in self?.showMainWindow() }
+        flowBar.model.onMeetingOpen = { [weak self] in
+            guard let self, let id = self.meetings.currentID else { return }
+            self.showMeeting(id)
+        }
 
         keys.onTrigger = { [weak self] down, time in self?.send(down ? .keyDown(time) : .keyUp(time)) }
         keys.onHandsFreeKey = { [weak self] in self?.send(.handsFreeKey) }
@@ -75,6 +82,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             self?.meetingNotice(.init(text: "Transcribed an interrupted meeting", action: "Open", run: { self?.showMeeting(e.id) }, seconds: 8))
         }
         meetings.onNeedsSetup = { [weak self] in self?.showSettings() }
+        meetings.onRetranscribed = { [weak self] e in
+            self?.meetingNotice(.init(text: e.info.status == .failed ? "Re-transcribing failed" : "Transcribed again",
+                                      action: "Open", run: { self?.showMeeting(e.id) }, seconds: 8))
+        }
+        calls.onEvent = { [weak self] in self?.callEvent($0) }
+        applyCallDetection()
+        // Meeting audio past its keep period goes once an hour (and at launch, with recovery).
+        let purge = Timer(timeInterval: 3600, repeats: true) { [weak self] _ in
+            guard let self, !self.meetings.isActive else { return }
+            self.meetings.purgeExpiredAudio()
+        }
+        RunLoop.main.add(purge, forMode: .common)
+        purgeTimer = purge
+        Diagnostics.log("launch: accessibility \(Permissions.isGranted(.accessibility) ? "on" : "OFF"), input monitoring \(Permissions.isGranted(.inputMonitoring) ? "on" : "OFF"), microphone \(Permissions.isGranted(.microphone) ? "on" : "OFF"), trigger \(TriggerKey.current.rawValue)")
         // A meeting open in the detail view follows its folder when that is renamed.
         meetingStore.onRename = { [weak self] old, new in
             if self?.mainModel.openMeeting == old { self?.mainModel.openMeeting = new }
@@ -237,11 +258,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         case .sleep?: why = ": stopped when your Mac went to sleep"
         case .maxLength?: why = ": stopped at the length limit"
         case .lowDisk?: why = ": stopped, disk almost full"
+        case .callEnded?: why = ": the call ended"
         default: why = ""
         }
         meetingNotice(.init(text: "Transcript ready\(why)", action: "Open", run: { [weak self] in self?.showMeeting(e.id) }, seconds: 8))
         MeetingNotifier.post(title: "Transcript ready", body: "\(info.title) · \(MeetingDates.duration(info.durationSeconds)) · \(info.wordCount.formatted()) words",
                              meetingID: e.id)
+    }
+
+    // MARK: calls in other apps
+
+    /// Starts or stops the call detector to match Settings › Meetings.
+    func applyCallDetection() {
+        let mode = UserDefaults.standard.string(forKey: Key.meetingCallDetection) ?? "ask"
+        if mode == "off" { calls.stop() } else { calls.start() }
+    }
+
+    private func callEvent(_ event: CallWatch.Event) {
+        let mode = UserDefaults.standard.string(forKey: Key.meetingCallDetection) ?? "ask"
+        guard mode != "off" else { return }
+        Diagnostics.log("call: \(event), mode \(mode), meeting \(meetings.phase)")
+        switch event {
+        case .started(let app):
+            guard meetings.phase == .idle, !keys.isPaused else { return }
+            if mode == "auto" {
+                meetings.start(title: app.meetingTitle, forCall: true)
+            } else {
+                meetingNotice(.init(text: "\(app.name) call started. Record it?", action: "Record",
+                                    run: { [weak self] in self?.meetings.start(title: app.meetingTitle, forCall: true) }, seconds: 15))
+            }
+        case .ended(let app):
+            guard meetings.isRecording else { return }
+            if mode == "auto" && meetings.startedForCall {
+                meetings.stop(.callEnded)
+            } else {
+                meetingNotice(.init(text: "\(app.name) call ended. Stop recording?", action: "Stop",
+                                    run: { [weak self] in self?.meetings.stop() }, seconds: 15))
+            }
+        }
     }
 
     /// The Meetings tab, opened on one meeting.
@@ -274,7 +328,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         case .pasted:
             break
         case .copiedOnly:
-            flowBar.notice("Copied – press ⌘V", action: "Fix") { [weak self] in self?.showOnboarding(at: .typing) }
+            // No Accessibility (a fresh or re-signed build loses it): say why it didn't paste.
+            flowBar.notice("Copied, not pasted: allow Accessibility", action: "Fix") { [weak self] in self?.showOnboarding(at: .typing) }
         }
     }
 
@@ -319,6 +374,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
             meeting.keyEquivalentModifierMask = [.control, .option]
         }
         menu.addItem(meeting)
+        let sounds = item("Play start/stop sounds", #selector(toggleSounds))
+        sounds.state = UserDefaults.standard.bool(forKey: Key.sounds) ? .on : .off
+        menu.addItem(sounds)
         menu.addItem(item(keys.isPaused ? "Resume \(TriggerKey.current.title)" : "Pause \(TriggerKey.current.title) for 1 hour", #selector(togglePause)))
         menu.addItem(.separator())
         menu.addItem(item("Meetings…", #selector(openMeetings)))
@@ -415,6 +473,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         guard Self.languages.indices.contains(sender.selectedSegment) else { return }
         UserDefaults.standard.set(Self.languages[sender.selectedSegment].0, forKey: Key.language)
         dictation.warmUp()
+    }
+
+    @objc private func toggleSounds() {
+        UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: Key.sounds), forKey: Key.sounds)
     }
 
     @objc private func toggleTranslate() {

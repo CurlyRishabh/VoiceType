@@ -36,6 +36,8 @@ final class FlowModel: ObservableObject {
     var onResize: () -> Void = {}
     var onCancel: () -> Void = {}
     var onOpen: () -> Void = {}
+    /// Click on the meeting pill (not its Stop button): the live transcript.
+    var onMeetingOpen: () -> Void = {}
     var onNoticeAction: () -> Void = {}
 
     func push(_ level: Float) {
@@ -295,8 +297,10 @@ struct FlowBarView: View {
             }
         }
         .padding(.trailing, m.wrappingUp ? 0 : -8)
+        .contentShape(Rectangle())
+        .onTapGesture { model.onMeetingOpen() }
         .onHover { model.meetingHover = $0 }
-        .help("\(m.title) · \(m.words.formatted()) words")
+        .help("\(m.title) · \(m.words.formatted()) words · click for the live transcript")
         .accessibilityElement(children: .contain)
         .accessibilityLabel(m.wrappingUp ? "Finishing the meeting transcript" : "Recording a meeting, \(Self.clock(m.elapsed))")
     }

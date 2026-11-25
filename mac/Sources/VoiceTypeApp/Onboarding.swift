@@ -167,6 +167,15 @@ struct OnboardingView: View {
 
     // MARK: Permissions
 
+    /// One line that says plainly whether this step is set up: green when it is, orange with what
+    /// happens without it when it isn't.
+    private func status(_ ok: Bool, on: String, off: String) -> some View {
+        Label(ok ? on : off, systemImage: ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+            .font(.system(size: 13, weight: .medium))
+            .foregroundColor(ok ? .green : .orange)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
     /// "VoiceType is already in the list; switch it on." Shown once VoiceType has asked.
     @ViewBuilder private func switchItOnHint(_ kind: Permissions.Kind, _ list: String) -> some View {
         if Permissions.hasAsked(kind) && !Permissions.isGranted(kind) {
@@ -192,6 +201,8 @@ struct OnboardingView: View {
                     }
                 }
             }
+            status(Permissions.isGranted(.microphone), on: "Microphone is on for VoiceType",
+                   off: "Microphone is off: VoiceType can’t hear you yet")
             switchItOnHint(.microphone, "Microphone")
             systemAudio
         }
@@ -226,14 +237,17 @@ struct OnboardingView: View {
                     }
                 }
             }
+            status(Permissions.isGranted(.accessibility), on: "Accessibility is on: dictation is pasted where your cursor is",
+                   off: "Accessibility is off: dictation is only copied, and you press ⌘V yourself")
             switchItOnHint(.accessibility, "Accessibility")
         }
     }
 
     private var key: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            step("Make fn start dictation",
-                 "Hold fn to talk; double-tap it, or press ⇧⌥ Space, for hands-free. VoiceType needs Input Monitoring to notice fn in other apps. It only reacts to fn and esc and never records what you type.",
+        let k = TriggerKey.current == .fn ? "fn" : TriggerKey.current.title
+        return VStack(alignment: .leading, spacing: 16) {
+            step("Make \(k) start dictation",
+                 "Hold \(k) to talk; double-tap it, or press ⇧⌥ Space, for hands-free. VoiceType needs Input Monitoring to notice \(k) in other apps. It only reacts to \(k) and esc and never records what you type.",
                  done: model.step.isDone(app)) {
                 if TriggerKey.current != .optionSpace && !Permissions.isGranted(.inputMonitoring) {
                     Button(Permissions.hasAsked(.inputMonitoring) ? "Open System Settings" : "Allow Input Monitoring") {
@@ -241,8 +255,14 @@ struct OnboardingView: View {
                     }
                 }
             }
-            if TriggerKey.current != .optionSpace { switchItOnHint(.inputMonitoring, "Input Monitoring") }
-            VStack(alignment: .leading, spacing: 8) {
+            if TriggerKey.current != .optionSpace {
+                status(Permissions.isGranted(.inputMonitoring), on: "Input Monitoring is on: \(TriggerKey.current.title) works in every app",
+                       off: "Input Monitoring is off: \(TriggerKey.current.title) won’t start dictation in other apps")
+                switchItOnHint(.inputMonitoring, "Input Monitoring")
+            } else {
+                status(true, on: "⌥ Space needs no permission", off: "")
+            }
+            if TriggerKey.current == .fn { VStack(alignment: .leading, spacing: 8) {
                 Text("System Settings → Keyboard → “Press fn key to”").font(.system(size: 13)).foregroundColor(.secondary)
                 HStack {
                     switch FnKeySetting.isDoNothing {
@@ -255,7 +275,7 @@ struct OnboardingView: View {
                 }
             }
             .padding(14)
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.12)))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.12))) }
             HStack(spacing: 16) {
                 Button("No fn key? Use right ⌥") { setTrigger(.rightOption) }.buttonStyle(.link)
                 Button("Use ⌥ Space (no permission needed)") { setTrigger(.optionSpace) }.buttonStyle(.link)
@@ -274,16 +294,26 @@ struct OnboardingView: View {
     // MARK: Models and trying it
 
     private var models: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            step("Get the speech model",
-                 "One file (\(KnownModels.recommended.sizeText)). VoiceType never goes online, so your browser downloads it:\n1. Click Download and wait for it to finish.\n2. Click Import and choose \(KnownModels.recommended.fileName) in Downloads.\nVoiceType checks the file and copies it in; you can delete the download afterwards.",
-                 done: model.step.isDone(app)) {
-                Button("Download (\(KnownModels.recommended.sizeText))") { app.downloadModel() }
-                Button("Import…") { app.importModels { model.importReport = $0; model.refresh += 1 } }
+        let installed = app.models.isReady(.whisper)
+        return VStack(alignment: .leading, spacing: 14) {
+            if installed {
+                // Already there (an earlier install, Homebrew, or a reinstall): nothing to download.
+                step("Speech model already installed",
+                     "\(KnownModels.recommended.fileName) is on this Mac, in ~/Library/Application Support/VoiceType/Models. There is nothing to download: click Continue.",
+                     done: model.step.isDone(app)) {
+                    Button("Replace with another file…") { app.importModels { model.importReport = $0; model.refresh += 1 } }
+                        .controlSize(.small)
+                }
+            } else {
+                step("Get the speech model",
+                     "One file (\(KnownModels.recommended.sizeText)). VoiceType never goes online, so your browser downloads it:\n1. Click Download and wait for it to finish.\n2. Click Import and choose \(KnownModels.recommended.fileName) in Downloads.\nVoiceType checks the file and copies it in; you can delete the download afterwards.",
+                     done: model.step.isDone(app)) {
+                    Button("Download (\(KnownModels.recommended.sizeText))") { app.downloadModel() }
+                    Button("Import…") { app.importModels { model.importReport = $0; model.refresh += 1 } }
+                }
             }
-            Label(app.models.isReady(.whisper) ? "Speech model ready" : "Speech model not imported yet",
-                  systemImage: app.models.isReady(.whisper) ? "checkmark.circle.fill" : "circle")
-                .foregroundColor(app.models.isReady(.whisper) ? .primary : .secondary)
+            status(installed, on: "Installed: dictation and meetings are ready to use",
+                   off: "Not installed yet: dictation won’t work until you import it")
             if !model.importReport.isEmpty { Text(model.importReport).font(.caption).foregroundColor(.secondary) }
         }
     }
