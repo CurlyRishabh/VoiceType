@@ -220,7 +220,8 @@ final class SherpaDiarizer {
         config.clustering.threshold = threshold
         config.min_duration_on = 0.3
         config.min_duration_off = 0.5
-        guard let p = SherpaOnnxCreateOfflineSpeakerDiarization(&config) else { return nil }
+        // The C strings must outlive the create call.
+        guard let p = withExtendedLifetime(s, { SherpaOnnxCreateOfflineSpeakerDiarization(&config) }) else { return nil }
         sd = p
     }
 
@@ -254,16 +255,24 @@ enum MeetingSpeakers {
         return nil
     }
 
-    /// The meeting's info with `speakers` set (and the transcript files rewritten), or nil when
-    /// there was nothing to do (no system audio, too little Others speech, no models).
-    static func identify(folder: URL) -> MeetingInfo? {
-        guard let models, var info = MeetingFiles.readInfo(folder), info.status.hasTranscript else { return nil }
+    /// Longest stretch of the others' speech analysed (memory: about 230 MB of samples an hour).
+    static let maxSeconds = 75.0 * 60
+
+    /// The meeting's Others segments labelled by voice, and how many voices; nil when there was
+    /// nothing to do (no system audio, too little or too much Others speech, no models). Reads only;
+    /// the caller writes the files (on the main thread, so it can't race a rename).
+    static func analyze(folder: URL) -> (segments: [TranscriptSegment], speakers: Int)? {
+        guard let models, let info = MeetingFiles.readInfo(folder), info.status.hasTranscript else { return nil }
         let segments = MeetingFiles.readSegments(folder)
         guard segments.filter({ $0.channel == .others }).count >= 2,
               let reader = WavReader(url: folder.appendingPathComponent(MeetingChannel.others.fileName)) else { return nil }
         let sr = Double(sampleRate)
         let timeline = SpeakerAssign.Timeline(segments, total: Double(reader.sampleCount) / sr)
         guard timeline.length >= 4 else { return nil }
+        guard timeline.length <= maxSeconds else {
+            NSLog("VoiceType meeting: %.0f min of the others' speech is too long to tell apart", timeline.length / 60)
+            return nil
+        }
         var samples: [Float] = []
         samples.reserveCapacity(Int(timeline.length * sr) + sampleRate)
         for r in timeline.ranges { samples += reader.read(Int(r.lowerBound * sr)..<Int(r.upperBound * sr)) }
@@ -274,15 +283,26 @@ enum MeetingSpeakers {
         }
         let turns = timeline.original(diarizer.process(samples))
         let (labelled, count) = SpeakerAssign.assign(segments, turns: turns)
-        if let onDisk = MeetingFiles.readInfo(folder) { info = onDisk } // a rename meanwhile
-        info.speakers = count
-        do {
-            try MeetingFiles.writeTranscript(labelled, info: info, to: folder)
-            try MeetingFiles.writeInfo(info, to: folder)
-        } catch {
-            return nil
-        }
         NSLog("VoiceType meeting: %d voices among the others (%.0fs of speech analysed in %.1fs)", count, timeline.length, Date().timeIntervalSince(t0))
+        return (labelled, count)
+    }
+
+    /// Writes what `analyze` found (and clears the pending mark). Main thread in the app.
+    @discardableResult
+    static func apply(_ result: (segments: [TranscriptSegment], speakers: Int)?, folder: URL) -> MeetingInfo? {
+        guard var info = MeetingFiles.readInfo(folder) else { return nil }
+        info.speakersPending = false
+        if let result, info.status.hasTranscript {
+            info.speakers = result.speakers
+            try? MeetingFiles.writeTranscript(result.segments, info: info, to: folder)
+        }
+        try? MeetingFiles.writeInfo(info, to: folder)
         return info
+    }
+
+    /// Headless: analyse and write in one go.
+    static func identify(folder: URL) -> MeetingInfo? {
+        let found = analyze(folder: folder)
+        return found == nil ? nil : apply(found, folder: folder)
     }
 }

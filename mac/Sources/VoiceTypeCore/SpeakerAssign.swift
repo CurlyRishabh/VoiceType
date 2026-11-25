@@ -19,9 +19,11 @@ public enum SpeakerAssign {
         public let ranges: [ClosedRange<Double>]
 
         public init(_ segments: [TranscriptSegment], pad: Double = 0.3, total: Double) {
+            // Bounds first, ranges only when valid (a segment past the end of a cut-short file).
             let spans = segments.filter { $0.channel == .others && $0.end > $0.start }
-                .map { max(0, $0.start - pad)...min(total, $0.end + pad) }
-                .filter { $0.upperBound > $0.lowerBound }
+                .map { (max(0, $0.start - pad), min(total, $0.end + pad)) }
+                .filter { $0.1 > $0.0 }
+                .map { $0.0...$0.1 }
                 .sorted { $0.lowerBound < $1.lowerBound }
             var merged: [ClosedRange<Double>] = []
             for r in spans {

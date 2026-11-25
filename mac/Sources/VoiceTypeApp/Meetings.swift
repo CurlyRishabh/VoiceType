@@ -592,6 +592,7 @@ final class MeetingController: ObservableObject {
         let keep = AppSettings.meetingKeepsAudio
         let speakers = speakersOn && systemAudio != .unavailable
         speakerFollowUp = speakers ? !keep : nil
+        info.speakersPending = speakers
         // finish() seals the channels first, so audio still in flight from the captures is ignored.
         pipeline.finish { [weak self] outcome in
             // system.wav stays until the speakers are told apart; then the keep setting applies.
@@ -658,6 +659,10 @@ final class MeetingController: ObservableObject {
     /// is tried once per launch, so one that can't be saved can't loop.
     func recoverInterrupted() {
         guard recoveryPipeline == nil else { return }
+        // Speaker work a quit cut off: queue it again (its audio is still there; retention waited).
+        for e in store.entries where e.info.speakersPending && e.info.status.hasTranscript && !isBusy(e.id) {
+            identifySpeakers(e.id, deleteAudioAfter: !AppSettings.meetingKeepsAudio)
+        }
         sweepLeftoverAudio()
         purgeExpiredAudio()
         let pending = store.entries.filter {
@@ -709,8 +714,9 @@ final class MeetingController: ObservableObject {
             recoveringID = entry.id
             p.ingestRecordedAudio()
             let echo = UserDefaults.standard.bool(forKey: Key.meetingEchoFilter)
-            let base = info
             let speakers = speakersOn
+            info.speakersPending = speakers
+            let base = info
             p.finish { [weak self] outcome in
                 // A re-transcribe replaces the transcript only with a complete one, or a partial one
                 // with at least as many words; otherwise the previous transcript stays as it was.
@@ -741,6 +747,7 @@ final class MeetingController: ObservableObject {
                         if speakers, let e { self.identifySpeakers(e.id, deleteAudioAfter: !keepAudio) }
                     }
                     self.recoverInterrupted()
+                    self.nextSpeakerJob()
                 }
             }
         } catch {
@@ -764,7 +771,7 @@ final class MeetingController: ObservableObject {
 
     /// Can `e` be transcribed again from its audio right now?
     func canRetranscribe(_ e: MeetingStore.Entry) -> Bool {
-        e.id != currentID && recoveryPipeline == nil && phase == .idle && e.id != identifyingID
+        !isBusy(e.id) && recoveryPipeline == nil && phase == .idle
             && e.info.status != .recording && e.info.status != .transcribing && !MeetingFiles.audioFiles(e.folder).isEmpty
     }
 
@@ -797,6 +804,11 @@ final class MeetingController: ObservableObject {
     /// background; `deleteAudioAfter`: the keep setting said no, so the audio goes once done.
     func identifySpeakers(_ id: String, deleteAudioAfter: Bool) {
         guard !speakerJobs.contains(where: { $0.id == id }), id != identifyingID else { return }
+        if let e = store.entry(id), !e.info.speakersPending { // persisted, so a quit doesn't lose the job
+            var info = e.info
+            info.speakersPending = true
+            try? MeetingFiles.writeInfo(info, to: e.folder)
+        }
         speakerJobs.append((id, deleteAudioAfter))
         nextSpeakerJob()
     }
@@ -808,25 +820,33 @@ final class MeetingController: ObservableObject {
             && FileManager.default.fileExists(atPath: e.folder.appendingPathComponent(MeetingChannel.others.fileName).path)
     }
 
+    /// In use by recovery, re-transcribe or speaker work (running or queued): no folder moves.
+    func isBusy(_ id: String) -> Bool {
+        id == currentID || id == recoveringID || id == identifyingID || speakerJobs.contains { $0.id == id }
+    }
+
     private func nextSpeakerJob() {
-        guard identifyingID == nil, !speakerJobs.isEmpty else { return }
-        let job = speakerJobs.removeFirst()
+        guard identifyingID == nil, let i = speakerJobs.firstIndex(where: { $0.id != recoveringID }) else { return }
+        let job = speakerJobs.remove(at: i)
         guard let entry = store.entry(job.id) else { return nextSpeakerJob() }
         identifyingID = job.id
         let folder = entry.folder
         speakerQueue.async { [weak self] in
-            let found = MeetingSpeakers.identify(folder: folder)
-            if job.deleteAudio, var info = MeetingFiles.readInfo(folder), info.status == .ready {
-                MeetingFiles.deleteAudio(folder)
-                info.audioKept = false
-                try? MeetingFiles.writeInfo(info, to: folder)
-            }
+            let found = MeetingSpeakers.analyze(folder: folder)
             DispatchQueue.main.async {
                 guard let self else { return }
+                // Written here on the main thread, after anything a rename or note wrote meanwhile.
+                let info = MeetingSpeakers.apply(found, folder: folder)
+                if job.deleteAudio, var info, info.status == .ready, !AppSettings.meetingKeepsAudio {
+                    MeetingFiles.deleteAudio(folder)
+                    info.audioKept = false
+                    try? MeetingFiles.writeInfo(info, to: folder)
+                }
                 self.identifyingID = nil
                 self.store.refresh()
                 if let cur = self.store.entry(job.id) { _ = self.store.rename(cur, to: cur.info.title, folderInUse: false) } // a title typed meanwhile
                 Diagnostics.log("speakers: \(found?.speakers ?? 0) voices among the others")
+                _ = info
                 self.nextSpeakerJob()
             }
         }

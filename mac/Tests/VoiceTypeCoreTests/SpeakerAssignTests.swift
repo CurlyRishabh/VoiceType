@@ -62,4 +62,25 @@ import Testing
         let h = MeetingRender.header(info, timeZone: TimeZone(identifier: "UTC")!)
         #expect(h.contains("Rishabh (Speaker 1), Speaker 2"))
     }
+
+    @Test func segmentPastEndOfAudioIsSkipped() {
+        #expect(SpeakerAssign.Timeline([o(50, 55), o(2, 3)], pad: 0.3, total: 10).ranges == [1.7...3.3])
+    }
+
+    @Test func duplicateNameKeysDontCrash() throws {
+        let json = #"{"title":"T","startedAt":"2026-01-01T00:00:00Z","status":"ready","speakerNames":{"1":"A","01":"B"}}"#
+        let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601
+        let info = try d.decode(MeetingInfo.self, from: Data(json.utf8))
+        #expect(info.names.count == 1)
+    }
+
+    @Test func pendingSpeakersHoldTheAudio() {
+        var info = MeetingInfo(title: "T", startedAt: Date(timeIntervalSince1970: 0), status: .ready)
+        info.endedAt = Date(timeIntervalSince1970: 0)
+        info.audioKept = true
+        info.speakersPending = true
+        #expect(!AudioRetention.expired(info, days: 0, now: Date(timeIntervalSince1970: 100)))
+        info.speakersPending = false
+        #expect(AudioRetention.expired(info, days: 0, now: Date(timeIntervalSince1970: 100)))
+    }
 }

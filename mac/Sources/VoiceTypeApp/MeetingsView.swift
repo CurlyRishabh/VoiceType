@@ -290,7 +290,7 @@ private struct MeetingDetailView: View {
             meetings.rename(to: model.meetingTitleDraft)
             return
         }
-        let inUse = entry.id == meetings.recoveringID || entry.id == meetings.identifyingID
+        let inUse = meetings.isBusy(entry.id)
         store.rename(entry, to: model.meetingTitleDraft, folderInUse: inUse) // the open view follows via onRename
     }
 

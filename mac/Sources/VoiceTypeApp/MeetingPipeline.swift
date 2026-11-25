@@ -245,6 +245,9 @@ final class MeetingPipeline {
         info.languages = outcome.languages.sorted()
         info.wordCount = MeetingTranscript.wordCount(segments)
         info.echoLinesRemoved = removed
+        // New segments carry no voices yet: the old count and names would describe other people.
+        info.speakers = 0
+        info.speakerNames = [:]
         info.failedChunks = outcome.failedChunks
         info.missingSeconds = outcome.missingSeconds
         info.status = .after(chunks: outcome.chunks, failed: outcome.failedChunks)

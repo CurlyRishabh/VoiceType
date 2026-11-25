@@ -54,10 +54,12 @@ public struct MeetingInfo: Codable, Equatable, Sendable {
     public var speakers = 0
     /// Names given to them in the Meetings tab: "2" → "Priya".
     public var speakerNames: [String: String] = [:]
+    /// Telling the others apart is still to do (it needs the audio, so retention waits for it).
+    public var speakersPending = false
 
     /// speakerNames keyed by voice number.
     public var names: [Int: String] {
-        Dictionary(uniqueKeysWithValues: speakerNames.compactMap { k, v in Int(k).map { ($0, v) } })
+        Dictionary(speakerNames.compactMap { k, v in Int(k).map { ($0, v) } }, uniquingKeysWith: { a, _ in a }) // "1" and "01"
     }
 
     public init(title: String, startedAt: Date, status: Status = .recording) {
@@ -69,7 +71,7 @@ public struct MeetingInfo: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case version, title, startedAt, endedAt, status, stopReason, durationSeconds, decodeSeconds, rtf, tailSeconds
         case model, languageSetting, languages, wordCount, systemAudio, echoLinesRemoved, failedChunks, missingSeconds, audioKept, error
-        case speakers, speakerNames
+        case speakers, speakerNames, speakersPending
     }
 
     /// Lenient: a field added in a later version, or a hand-edited file, doesn't hide the meeting.
@@ -97,6 +99,7 @@ public struct MeetingInfo: Codable, Equatable, Sendable {
         error = try c.decodeIfPresent(String.self, forKey: .error)
         speakers = try c.decodeIfPresent(Int.self, forKey: .speakers) ?? 0
         speakerNames = (try? c.decodeIfPresent([String: String].self, forKey: .speakerNames)) ?? [:]
+        speakersPending = try c.decodeIfPresent(Bool.self, forKey: .speakersPending) ?? false
     }
 }
 
@@ -352,7 +355,7 @@ public enum AudioRetention {
     /// The audio of a finished meeting whose time is up. Meetings being recorded or transcribed,
     /// and ones without audio, never qualify; partial/failed ones keep theirs for the same period.
     public static func expired(_ info: MeetingInfo, days: Int, now: Date = Date()) -> Bool {
-        guard days >= 0, info.audioKept, info.status != .recording, info.status != .transcribing else { return false }
+        guard days >= 0, info.audioKept, !info.speakersPending, info.status != .recording, info.status != .transcribing else { return false }
         // A partial or failed transcript's audio is what can fix it: never less than the default.
         let days = info.status == .ready ? days : max(days, defaultDays)
         let end = info.endedAt ?? info.startedAt.addingTimeInterval(info.durationSeconds)
