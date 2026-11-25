@@ -9,8 +9,9 @@
   silence watch, downmix and tap-buffer selection, length and disk guards.
 * `scripts/test-meeting.sh`: the whole pipeline headless (`VoiceType --meeting`) on a synthetic
   call made with macOS voices: two channels, pauses, crosstalk, a Hindi line, echo of the others in
-  the mic. Checks speakers, words, Hinglish output, echo removal, timestamp order and clock, the
-  three files, and prints decode time / RTF.
+  the mic, and three different voices on the others' side. Checks speakers, words, Hinglish output,
+  echo removal, timestamp order and clock, the three files, that the three other voices are told
+  apart (Speaker 1/2/3, each line right), and prints decode time / RTF.
 * `scripts/test-audio.sh`: dictation is unchanged (language per call did not change its output).
 
 ## Manual test plan
@@ -179,4 +180,21 @@ and `tailSeconds` are recorded (also in Settings → Advanced → Debug as "meet
 2. Rewriting a word into a different one ("report" → "invoice"), adding or deleting words, or
    editing text before the dictation adds nothing.
 3. Password fields and apps that don't expose their text are never read.
+
+### 15. Telling the other speakers apart (Settings › Meetings › Tell the other speakers apart)
+1. A call with two or more other people: right after Stop the transcript shows **Others**; a few
+   seconds later (about 5 s per minute of their speech) the detail view says "Telling the other
+   speakers apart…", then the lines become **Speaker 1**, **Speaker 2**… in their own colours, and
+   "N other speakers told apart by voice". transcript.md lists them under **Speakers**.
+2. Right-click a speaker's name → *Rename Speaker 2…* → "Priya": every line, transcript.md and
+   *Copy for AI* use the name; an empty name puts "Speaker 2" back.
+3. A call with one other person stays **Others** (no numbering).
+4. With "Keep meeting audio: Delete right away", the audio is still deleted once speakers are done.
+5. An older meeting with audio and no speakers: *Find speakers* runs it.
+6. Turn the setting off: meetings stay **Others**.
+
+### 16. Hands-free by double-tap
+1. Default settings: double-tap the dictation key (Right ⌥ here) → hands-free; tap once more to
+   finish. ⇧⌥ Space does nothing unless turned on in Settings › Dictation.
+2. Holding the key still works as push-to-talk.
 
