@@ -43,6 +43,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     // MARK: launch
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // One VoiceType at a time: two copies (an installed one and a fresh build, say) would both
+        // hear the key and paste every dictation twice. The one already running wins.
+        if let other = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && !$0.isTerminated }) {
+            Diagnostics.log("second copy started; already running: \(other.bundleURL?.path ?? "?"); quitting")
+            let alert = NSAlert()
+            alert.messageText = "VoiceType is already running"
+            alert.informativeText = "Another copy is open (\(other.bundleURL?.path ?? "unknown location")). Quit it first if you meant to use this one; two copies would type everything twice."
+            alert.runModal()
+            NSApp.terminate(nil)
+            return
+        }
         AppSettings.registerDefaults()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         let menu = NSMenu()
