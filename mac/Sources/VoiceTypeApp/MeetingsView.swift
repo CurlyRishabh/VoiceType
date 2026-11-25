@@ -236,16 +236,28 @@ private struct MeetingDetailView: View {
                     .fixedSize()
                     .disabled(!meetings.canRetranscribe(entry))
                     .help("Transcribe the kept audio again, for example in another language. Your notes stay.")
+                    Button("Find speakers") { meetings.identifySpeakers(entry.id, deleteAudioAfter: false) }
+                        .disabled(!meetings.canIdentifySpeakers(entry))
+                        .help("Tell the other people on the call apart by voice (Speaker 1, Speaker 2…).")
                     Button("Delete audio") { meetings.deleteAudio(entry) }
-                        .disabled(isCurrent || entry.id == meetings.recoveringID)
+                        .disabled(isCurrent || entry.id == meetings.recoveringID || entry.id == meetings.identifyingID)
                         .help("Delete mic.wav and system.wav now. The transcript and notes stay; re-transcribing is no longer possible.")
                 }
                 Spacer()
                 // Anything but the meeting being recorded or transcribed right now (a crashed one can go).
                 Button("Delete…", role: .destructive) { model.confirmDeleteMeeting = true }
-                    .disabled(isCurrent || entry.id == meetings.recoveringID)
+                    .disabled(isCurrent || entry.id == meetings.recoveringID || entry.id == meetings.identifyingID)
             }
             .controlSize(.small)
+            if entry.id == meetings.identifyingID {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Telling the other speakers apart…").font(.system(size: 12)).foregroundColor(.secondary)
+                }
+            } else if info.speakers > 1 {
+                Text("\(info.speakers) other speakers told apart by voice. Right-click a speaker’s name to rename them.")
+                    .font(.system(size: 12)).foregroundColor(.secondary)
+            }
             if info.status == .partial, let error = info.error {
                 Label("\(error). The audio is kept in the meeting folder.", systemImage: "exclamationmark.triangle.fill")
                     .font(.system(size: 12)).foregroundColor(.orange).fixedSize(horizontal: false, vertical: true)
@@ -278,7 +290,7 @@ private struct MeetingDetailView: View {
             meetings.rename(to: model.meetingTitleDraft)
             return
         }
-        let inUse = entry.id == meetings.recoveringID
+        let inUse = entry.id == meetings.recoveringID || entry.id == meetings.identifyingID
         store.rename(entry, to: model.meetingTitleDraft, folderInUse: inUse) // the open view follows via onRename
     }
 
@@ -345,7 +357,8 @@ private struct MeetingDetailView: View {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 2) {
                             ForEach(lines) { line in
-                                LineRow(line: line, highlight: line.id == current ? .current : matches.contains(line.id) ? .match : .none).id(line.id)
+                                LineRow(line: line, highlight: line.id == current ? .current : matches.contains(line.id) ? .match : .none,
+                                        renameVoice: { askSpeakerName($0, current: line.label) }).id(line.id)
                             }
                         }
                         .padding(.bottom, 12)
@@ -355,6 +368,21 @@ private struct MeetingDetailView: View {
             }
             NoteField(placeholder: "Add a note to this meeting (Return to save)") { store.addNote(entry, $0) }
         }
+    }
+
+    /// "Speaker 2" → a name, in a small alert (no SwiftUI state needed).
+    private func askSpeakerName(_ voice: Int, current: String) {
+        let alert = NSAlert()
+        alert.messageText = "Name Speaker \(voice)"
+        alert.informativeText = "Used in this meeting’s transcript and in Copy for AI. Leave empty for “Speaker \(voice)”."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.stringValue = current == "Speaker \(voice)" ? "" : current
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        store.renameSpeaker(entry, voice: voice, to: field.stringValue)
     }
 
     private func placeholder(_ title: String, _ text: String) -> some View {
@@ -371,8 +399,19 @@ private struct LineRow: View {
     enum Highlight { case none, match, current }
     let line: TranscriptLine
     let highlight: Highlight
+    /// Rename one of the others told apart by voice (absent in the live view).
+    var renameVoice: ((Int) -> Void)? = nil
 
     private static let others = Color(red: 0.13, green: 0.55, blue: 0.53)
+    /// One colour per voice among the others.
+    private static let voices: [Color] = [others, Color(red: 0.55, green: 0.35, blue: 0.75), Color(red: 0.75, green: 0.45, blue: 0.15),
+                                          Color(red: 0.25, green: 0.45, blue: 0.8), Color(red: 0.7, green: 0.3, blue: 0.45)]
+
+    private var color: Color {
+        if line.isNote { return .orange }
+        if line.channel == .me { return Mist.accent }
+        return line.voice.map { Self.voices[($0 - 1) % Self.voices.count] } ?? Self.others
+    }
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -381,8 +420,13 @@ private struct LineRow: View {
                 .frame(width: 58, alignment: .leading)
             Text(line.isNote ? "Note" : line.label)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(line.isNote ? .orange : line.channel == .me ? Mist.accent : Self.others)
-                .frame(width: 48, alignment: .leading)
+                .foregroundColor(color)
+                .lineLimit(1)
+                .frame(width: line.voice == nil ? 48 : 78, alignment: .leading)
+                .contextMenu {
+                    if let v = line.voice, let renameVoice { Button("Rename \(line.label)…") { renameVoice(v) } }
+                }
+                .help(line.voice == nil ? "" : "Right-click to rename")
             Text(line.text).font(.system(size: 14)).italic(line.isNote).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }

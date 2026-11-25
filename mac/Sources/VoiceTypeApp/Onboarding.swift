@@ -247,7 +247,7 @@ struct OnboardingView: View {
         let k = TriggerKey.current == .fn ? "fn" : TriggerKey.current.title
         return VStack(alignment: .leading, spacing: 16) {
             step("Make \(k) start dictation",
-                 "Hold \(k) to talk; double-tap it, or press ⇧⌥ Space, for hands-free. VoiceType needs Input Monitoring to notice \(k) in other apps. It only reacts to \(k) and esc and never records what you type.",
+                 "Hold \(k) to talk. Double-tap it for hands-free: it keeps listening until you tap it again. VoiceType needs Input Monitoring to notice \(k) in other apps. It only reacts to \(k) and esc and never records what you type.",
                  done: model.step.isDone(app)) {
                 if TriggerKey.current != .optionSpace && !Permissions.isGranted(.inputMonitoring) {
                     Button(Permissions.hasAsked(.inputMonitoring) ? "Open System Settings" : "Allow Input Monitoring") {
@@ -323,7 +323,7 @@ struct OnboardingView: View {
         let picked = LanguageSelection.languages(for: language)
         let phrase = picked == ["hi"] ? "“Namaste, yeh meri pehli dictation hai.”" : "“Hello, this is my first dictation, full stop.”"
         return VStack(alignment: .leading, spacing: 14) {
-            step("Try it", "Click in the box, hold \(key) and say \(phrase) Release to type it. Then try double-tapping \(key) (or pressing ⇧⌥ Space) for hands-free.",
+            step("Try it", "Click in the box, hold \(key) and say \(phrase) Release to type it. Then double-tap \(key) for hands-free, and tap it once more to finish.",
                  done: model.step.isDone(app)) {
                 EmptyView()
             }

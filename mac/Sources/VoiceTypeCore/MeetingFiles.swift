@@ -50,6 +50,15 @@ public struct MeetingInfo: Codable, Equatable, Sendable {
     public var missingSeconds: Double = 0
     public var audioKept = false
     public var error: String?
+    /// How many different voices were found among the others (0 = not checked, or no Others speech).
+    public var speakers = 0
+    /// Names given to them in the Meetings tab: "2" → "Priya".
+    public var speakerNames: [String: String] = [:]
+
+    /// speakerNames keyed by voice number.
+    public var names: [Int: String] {
+        Dictionary(uniqueKeysWithValues: speakerNames.compactMap { k, v in Int(k).map { ($0, v) } })
+    }
 
     public init(title: String, startedAt: Date, status: Status = .recording) {
         self.title = title
@@ -60,6 +69,7 @@ public struct MeetingInfo: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case version, title, startedAt, endedAt, status, stopReason, durationSeconds, decodeSeconds, rtf, tailSeconds
         case model, languageSetting, languages, wordCount, systemAudio, echoLinesRemoved, failedChunks, missingSeconds, audioKept, error
+        case speakers, speakerNames
     }
 
     /// Lenient: a field added in a later version, or a hand-edited file, doesn't hide the meeting.
@@ -85,6 +95,8 @@ public struct MeetingInfo: Codable, Equatable, Sendable {
         missingSeconds = try c.decodeIfPresent(Double.self, forKey: .missingSeconds) ?? 0
         audioKept = try c.decodeIfPresent(Bool.self, forKey: .audioKept) ?? false
         error = try c.decodeIfPresent(String.self, forKey: .error)
+        speakers = try c.decodeIfPresent(Int.self, forKey: .speakers) ?? 0
+        speakerNames = (try? c.decodeIfPresent([String: String].self, forKey: .speakerNames)) ?? [:]
     }
 }
 
@@ -94,7 +106,8 @@ public enum MeetingRender {
     public static let aiInstructions = """
     This is an automatic transcript of a meeting. "Me" is the person who recorded it; "Others" is everyone else on the call. \
     Please summarise it in a few sentences, then list the decisions made, the action items (with owner and due date when \
-    they were said) and the open questions. Cite the timestamp, like [00:12:34], for each point. Lines marked "My note" were \
+    they were said) and the open questions. Cite the timestamp, like [00:12:34], for each point. "Speaker 1", "Speaker 2"… are the \
+    other people told apart by voice (this can occasionally merge or split people). Lines marked "My note" were \
     typed by Me during the meeting: treat them as what Me found important. Speech recognition can mishear names and \
     numbers: flag anything that looks wrong instead of guessing.
     """
@@ -116,7 +129,10 @@ public enum MeetingRender {
             "# \(info.title)",
             "",
             "- **When:** \(day), \(clock.string(from: info.startedAt)) – \(clock.string(from: end)) (\(MeetingDates.duration(info.durationSeconds)))",
-            "- **Speakers:** Me (this Mac's microphone), Others (sound from other apps: everyone else on the call)",
+            info.speakers > 1
+                ? "- **Speakers:** Me (this Mac's microphone); the others on the call, told apart by voice: "
+                    + (1...info.speakers).map { n in info.names[n].map { "\($0) (Speaker \(n))" } ?? "Speaker \(n)" }.joined(separator: ", ")
+                : "- **Speakers:** Me (this Mac's microphone), Others (sound from other apps: everyone else on the call)",
         ]
         var engine: [String] = []
         if !info.model.isEmpty { engine.append(info.model) }
@@ -270,7 +286,7 @@ public enum MeetingFiles {
     }
 
     public static func writeMarkdown(_ segments: [TranscriptSegment], info: MeetingInfo, to folder: URL, timeZone: TimeZone = .current) throws {
-        let md = MeetingRender.markdown(info, lines: MeetingTranscript.lines(segments, notes: readNotes(folder)), timeZone: timeZone)
+        let md = MeetingRender.markdown(info, lines: MeetingTranscript.lines(segments, notes: readNotes(folder), names: info.names), timeZone: timeZone)
         try Data(md.utf8).write(to: folder.appendingPathComponent(transcriptMarkdown), options: .atomic)
     }
 

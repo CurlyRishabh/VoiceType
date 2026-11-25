@@ -26,12 +26,15 @@ public struct TranscriptSegment: Codable, Equatable, Sendable {
     public var text: String
     /// Language Whisper decoded the chunk in ("en", "hi"); "" when the engine doesn't say.
     public var language: String
+    /// Which of the other people said it (1, 2…), once they were told apart by voice; nil for Me,
+    /// and for Others until (or unless) more than one voice was found.
+    public var voice: Int?
 
-    public init(start: Double, end: Double, channel: MeetingChannel, text: String, language: String = "") {
-        self.start = start; self.end = end; self.channel = channel; self.text = text; self.language = language
+    public init(start: Double, end: Double, channel: MeetingChannel, text: String, language: String = "", voice: Int? = nil) {
+        self.start = start; self.end = end; self.channel = channel; self.text = text; self.language = language; self.voice = voice
     }
 
-    enum CodingKeys: String, CodingKey { case start, end, channel, speaker, text, language }
+    enum CodingKeys: String, CodingKey { case start, end, channel, speaker, text, language, voice }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -40,6 +43,7 @@ public struct TranscriptSegment: Codable, Equatable, Sendable {
         channel = try c.decode(MeetingChannel.self, forKey: .channel)
         text = try c.decode(String.self, forKey: .text)
         language = try c.decodeIfPresent(String.self, forKey: .language) ?? ""
+        voice = try c.decodeIfPresent(Int.self, forKey: .voice)
     }
 
     /// Times rounded to 10 ms, and the speaker label written out for people reading the JSON.
@@ -48,9 +52,10 @@ public struct TranscriptSegment: Codable, Equatable, Sendable {
         try c.encode((start * 100).rounded() / 100, forKey: .start)
         try c.encode((end * 100).rounded() / 100, forKey: .end)
         try c.encode(channel, forKey: .channel)
-        try c.encode(channel.label, forKey: .speaker)
+        try c.encode(voice.map { "Speaker \($0)" } ?? channel.label, forKey: .speaker)
         try c.encode(text, forKey: .text)
         try c.encode(language, forKey: .language)
+        try c.encodeIfPresent(voice, forKey: .voice)
     }
 }
 
@@ -63,9 +68,13 @@ public struct TranscriptLine: Equatable, Sendable, Identifiable {
     public var text: String
     /// A note typed by Me during (or after) the meeting, not speech.
     public var isNote = false
+    /// Which of the others (1, 2…), when they were told apart by voice.
+    public var voice: Int?
+    /// That speaker's name ("Speaker 2" until renamed).
+    public var name: String?
 
-    /// "Me", "Others" or "My note".
-    public var label: String { isNote ? "My note" : channel.label }
+    /// "Me", "Others", "Speaker 2" (or the name given to them) or "My note".
+    public var label: String { isNote ? "My note" : name ?? channel.label }
 }
 
 /// A note typed while the meeting runs (or later), at `at` seconds into the meeting.
@@ -82,7 +91,9 @@ public enum MeetingTranscript {
     public static let maxLineSeconds = 120.0
 
     /// Both channels in time order, consecutive same-speaker segments merged into one line.
-    public static func lines(_ segments: [TranscriptSegment], maxGap: Double = maxGap, maxLineSeconds: Double = maxLineSeconds) -> [TranscriptLine] {
+    /// `names`: what the others told apart by voice are called (voice number → name).
+    public static func lines(_ segments: [TranscriptSegment], maxGap: Double = maxGap, maxLineSeconds: Double = maxLineSeconds,
+                             names: [Int: String] = [:]) -> [TranscriptLine] {
         let sorted = segments.enumerated().sorted { a, b in
             a.element.start != b.element.start ? a.element.start < b.element.start : a.offset < b.offset
         }.map(\.element)
@@ -90,12 +101,13 @@ public enum MeetingTranscript {
         for s in sorted {
             let text = s.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { continue }
-            if var last = out.last, last.channel == s.channel, s.start - last.end <= maxGap, s.end - last.start <= maxLineSeconds {
+            if var last = out.last, last.channel == s.channel, last.voice == s.voice, s.start - last.end <= maxGap, s.end - last.start <= maxLineSeconds {
                 last.text += " " + text
                 last.end = max(last.end, s.end)
                 out[out.count - 1] = last
             } else {
-                out.append(TranscriptLine(id: out.count, start: s.start, end: s.end, channel: s.channel, text: text))
+                out.append(TranscriptLine(id: out.count, start: s.start, end: s.end, channel: s.channel, text: text,
+                                          voice: s.voice, name: s.voice.map { names[$0] ?? "Speaker \($0)" }))
             }
         }
         return out
@@ -103,8 +115,8 @@ public enum MeetingTranscript {
 
     /// Speech lines with the typed notes placed at their times (a note goes after speech that
     /// starts at the same moment). Ids are positions in the result.
-    public static func lines(_ segments: [TranscriptSegment], notes: [MeetingNote]) -> [TranscriptLine] {
-        let speech = lines(segments)
+    public static func lines(_ segments: [TranscriptSegment], notes: [MeetingNote], names: [Int: String] = [:]) -> [TranscriptLine] {
+        let speech = lines(segments, names: names)
         guard !notes.isEmpty else { return speech }
         var out: [TranscriptLine] = []
         var pending = notes.filter { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }.sorted { $0.at < $1.at }[...]

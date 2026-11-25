@@ -225,7 +225,11 @@ enum Headless {
             done.wait()
             let finished = MeetingPipeline.write(outcome, info: info, folder: folder, echoFilter: echo, keepAudio: true, stoppedAt: stopped)
             let total = Date().timeIntervalSince(fed)
+            let t0 = Date()
+            let voices = MeetingSpeakers.identify(folder: folder)?.speakers ?? 0
+            let speakerSeconds = Date().timeIntervalSince(t0)
             print((try? String(contentsOf: folder.appendingPathComponent(MeetingFiles.transcriptMarkdown), encoding: .utf8)) ?? "(no transcript.md)")
+            print(String(format: "SPEAKERS\tvoices=%d\ttime=%.2fs\tmodels=%@", voices, speakerSeconds, MeetingSpeakers.models == nil ? "missing" : "ok"))
             let speechSeconds = outcome.speechSeconds.values.reduce(0, +)
             print(String(format: "MEETING\tengine=%@\tlang=%@\taudio=%.1fs\tspeech=me %.1fs + others %.1fs\tchunks=%d\tdecode=%.2fs\tRTF=%.3f\tspeechRTF=%.3f\ttail=%.2fs\twall=%.2fs\tload=%.2fs\twords=%d\techoRemoved=%d\tstatus=%@\tfolder=%@",
                          outcome.engine, language, outcome.durationSeconds, outcome.speechSeconds[.me] ?? 0, outcome.speechSeconds[.others] ?? 0,

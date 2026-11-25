@@ -203,7 +203,7 @@ struct FlowBarView: View {
                 .frame(width: 46, height: 10)
         }
         .buttonStyle(.plain)
-        .help("Hold fn to dictate · double-tap fn or press ⇧⌥ Space for hands-free · click to open VoiceType")
+        .help("Hold \(TriggerKey.current.short) to dictate · double-tap it for hands-free · click to open VoiceType")
         .accessibilityLabel("Open VoiceType")
     }
 

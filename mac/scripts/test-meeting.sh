@@ -20,7 +20,7 @@ KEEP=0; [[ "${1:-}" == "--keep" ]] && KEEP=1
 swift build -c release --arch arm64 2>&1 | grep -E "error|Build complete" >&2
 BIN="$(swift build -c release --arch arm64 --show-bin-path)/VoiceType"
 
-for v in Samantha Daniel Lekha; do
+for v in Samantha Daniel Lekha Karen; do
   say -v '?' | grep -q "^$v " || { echo "macOS voice $v is not installed (System Settings → Accessibility → Spoken Content)." >&2; exit 2; }
 done
 
@@ -42,6 +42,9 @@ me	59	Samantha	Perfect, thanks everyone. Talk to you next week.
 others	65	Daniel	So I think the main thing is that we need to get the export out before the review, and I know that it is not going to be easy, but if we can do the migration first then the rest of it should be fine. What I want to do is make sure that you and I are on the same page about that.
 me	72	Samantha	Yes, we can do that.
 me	79	Samantha	That should be fine.
+others	85	Karen	Before we wrap up, the budget for the new dashboards was approved this morning.
+others	92	Daniel	Great news, I can start on the charts next sprint.
+others	98	Karen	Please send me the estimate by Friday so finance can sign it off.
 EOF
 
 n=0
@@ -95,11 +98,15 @@ check() { # check <name> <ok?> [detail]
 }
 yes_if() { if "$@"; then echo yes; else echo no; fi; }
 not() { ! "$@"; }
-said() { grep -E "^\[[0-9:]{8}\] \*\*$1:\*\*" "$MD" | grep -qi "$2"; }
+said() { # said <Me|Others> <text>; the others may be told apart as "Speaker N"
+  local who="$1"; [[ "$who" == Others ]] && who="(Others|Speaker [0-9]+)"
+  grep -E "^\[[0-9:]{8}\] \*\*$who:\*\*" "$MD" | grep -qi "$2"
+}
+voice_of() { { grep -i "$1" "$MD" || true; } | grep -oE '\*\*(Others|Speaker [0-9]+):\*\*' | head -1 || true; }
 not_said() { ! said "$@"; }
 
 [[ -f "$MD" ]] || { echo "FAIL  no transcript.md"; exit 1; }
-check "Me and Others both transcribed" "$(yes_if grep -q '\*\*Others:\*\*' "$MD")"
+check "Me and Others both transcribed" "$(yes_if grep -qE '\*\*(Others|Speaker [0-9]+):\*\*' "$MD")"
 for w in "weekly sync" "staging" "refund report" "December" "next week"; do check "Me said \"$w\"" "$(yes_if said Me "$w")"; done
 for w in "invoice export" "o'clock" "sounds good" "marketing"; do check "Others said \"$w\"" "$(yes_if said Others "$w")"; done
 check "Hindi line in Latin script (Hinglish)" "$(yes_if said Others "kal\|meeting\|design")" "$(grep -iE 'kal|design' "$MD" | head -1 | cut -c1-90)"
@@ -114,6 +121,12 @@ check "timestamps on the meeting clock (\"next week\" line near 0:59)" "$(yes_if
 check "transcript.json and meeting.json written" "$(yes_if test -s "$TMP/out/transcript.json" -a -s "$TMP/out/meeting.json")"
 check "meeting.json says ready" "$(yes_if grep -q '"status" : "ready"' "$TMP/out/meeting.json")"
 check "audio was written to disk" "$(yes_if test -s "$TMP/out/mic.wav" -a -s "$TMP/out/system.wav")"
+# Two other people (Daniel, Karen): told apart by voice.
+SPK="$(grep '^SPEAKERS' <<<"$OUT" || true)"
+D1="$(voice_of 'invoice export')"; D2="$(voice_of 'next sprint')"; K1="$(voice_of 'budget for the new')"; K2="$(voice_of 'estimate by Friday')"
+check "others told apart by voice" "$(yes_if grep -qE 'voices=[2-9]' <<<"$SPK")" "$(echo "$SPK" | cut -f2,3)"
+check "Daniel's lines share a speaker" "$(yes_if test -n "$D1" -a "$D1" == "$D2")" "$D1 / $D2"
+check "Karen's lines share a speaker, not Daniel's" "$(yes_if test -n "$K1" -a "$K1" == "$K2" -a "$K1" != "$D1")" "$K1 / $K2"
 TIMING="$(grep '^MEETING' <<<"$OUT" || true)"
 check "timing line" "$(yes_if test -n "$TIMING")"
 

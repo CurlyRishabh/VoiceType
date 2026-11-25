@@ -16,6 +16,9 @@ enum TriggerKey: String, CaseIterable {
         }
     }
 
+    /// For short hints: "fn", "Right ⌥", "⌥ Space".
+    var short: String { self == .fn ? "fn" : title }
+
     static var current: TriggerKey { TriggerKey(rawValue: UserDefaults.standard.string(forKey: Key.trigger) ?? "") ?? .fn }
 }
 

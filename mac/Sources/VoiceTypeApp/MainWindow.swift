@@ -695,6 +695,7 @@ struct SettingsPane: View {
     @AppStorage(Key.meetingMaxMinutes) var meetingMaxMinutes = MeetingLimit.defaultMinutes
     @AppStorage(Key.meetingAudioDays) var meetingAudioDays = AppSettings.meetingAudioDays
     @AppStorage(Key.meetingCallDetection) var meetingCallDetection = "ask"
+    @AppStorage(Key.meetingSpeakers) var meetingSpeakers = true
     @AppStorage(Key.meetingHideFromCapture) var meetingHideFromCapture = true
     @AppStorage(Key.meetingEchoFilter) var meetingEchoFilter = true
 
@@ -740,8 +741,8 @@ struct SettingsPane: View {
                 }
                 Toggle(isOn: $handsFreeShortcut) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Hands-free shortcut: ⇧⌥ Space")
-                        Text("Press once to start, again to finish. Works alongside double-tapping the dictation key.")
+                        Text("Extra hands-free shortcut: ⇧⌥ Space")
+                        Text("Off by default: double-tap the dictation key for hands-free instead. Turn on to also use ⇧⌥ Space.")
                             .font(.caption).foregroundColor(.secondary)
                     }
                 }
@@ -917,6 +918,13 @@ struct SettingsPane: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("When a call starts")
                     Text("Zoom, Teams, Slack huddles, FaceTime, Webex, or a browser (Google Meet) using the mic for a few seconds. Automatic recordings also stop when the call ends.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+            }
+            Toggle(isOn: $meetingSpeakers) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Tell the other speakers apart")
+                    Text("After the transcript is ready, “Others” becomes Speaker 1, Speaker 2… by voice (on this Mac, a few seconds per minute of their speech). Right-click a name to rename.")
                         .font(.caption).foregroundColor(.secondary)
                 }
             }

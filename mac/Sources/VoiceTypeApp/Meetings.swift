@@ -50,7 +50,7 @@ final class MeetingStore: ObservableObject {
 
     func lines(_ e: Entry) -> [TranscriptLine] {
         if let l = linesCache[e.id] { return l }
-        let l = MeetingTranscript.lines(MeetingFiles.readSegments(e.folder), notes: MeetingFiles.readNotes(e.folder))
+        let l = MeetingTranscript.lines(MeetingFiles.readSegments(e.folder), notes: MeetingFiles.readNotes(e.folder), names: e.info.names)
         linesCache[e.id] = l
         return l
     }
@@ -91,6 +91,16 @@ final class MeetingStore: ObservableObject {
         }
         refresh()
         return entry(folder.lastPathComponent)
+    }
+
+    /// Names one of the others ("Speaker 2" → "Priya"); empty puts the number back. transcript.md follows.
+    func renameSpeaker(_ e: Entry, voice: Int, to name: String) {
+        var info = e.info
+        let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        info.speakerNames[String(voice)] = n.isEmpty ? nil : n
+        try? MeetingFiles.writeInfo(info, to: e.folder)
+        if info.status.hasTranscript { try? MeetingFiles.writeMarkdown(MeetingFiles.readSegments(e.folder), info: info, to: e.folder) }
+        refresh()
     }
 
     /// A note added after the meeting, placed at its end; transcript.md is rewritten to include it.
@@ -161,6 +171,12 @@ final class MeetingController: ObservableObject {
     private(set) var othersHeardAt: TimeInterval = 0
     /// Notes typed during the current meeting.
     @Published private(set) var notes: [MeetingNote] = [] { didSet { updateLiveLines() } }
+    /// The meeting whose other speakers are being told apart (after its transcript is saved).
+    @Published private(set) var identifyingID: String?
+    private var speakerJobs: [(id: String, deleteAudio: Bool)] = []
+    private let speakerQueue = DispatchQueue(label: "meeting-speakers", qos: .utility)
+    /// Telling the others apart is on (Settings › Meetings); it needs system.wav after the transcript.
+    private var speakersOn: Bool { UserDefaults.standard.bool(forKey: Key.meetingSpeakers) && MeetingSpeakers.models != nil }
     /// The meeting being re-transcribed (it shares the recovery slot).
     @Published private(set) var retranscribingID: String?
     /// The current meeting was started for a call VoiceType detected (it may stop it when the call ends).
@@ -207,6 +223,8 @@ final class MeetingController: ObservableObject {
     }
     private var trouble: [MeetingChannel: Trouble] = [:]
     private var recoveryTried = Set<String>()
+    /// After the meeting being finished: tell its speakers apart, then delete the audio (true) or keep it.
+    private var speakerFollowUp: Bool?
     private var quitWaiters: [() -> Void] = []
     private var sleepObserver: NSObjectProtocol?
 
@@ -572,9 +590,12 @@ final class MeetingController: ObservableObject {
         setPhase(.finishing)
         let echo = UserDefaults.standard.bool(forKey: Key.meetingEchoFilter)
         let keep = AppSettings.meetingKeepsAudio
+        let speakers = speakersOn && systemAudio != .unavailable
+        speakerFollowUp = speakers ? !keep : nil
         // finish() seals the channels first, so audio still in flight from the captures is ignored.
         pipeline.finish { [weak self] outcome in
-            let done = MeetingPipeline.write(outcome, info: info, folder: folder, echoFilter: echo, keepAudio: keep, stoppedAt: stoppedAt)
+            // system.wav stays until the speakers are told apart; then the keep setting applies.
+            let done = MeetingPipeline.write(outcome, info: info, folder: folder, echoFilter: echo, keepAudio: keep || speakers, stoppedAt: stoppedAt)
             DispatchQueue.main.async { self?.finished(done, folder: folder) }
         }
     }
@@ -611,6 +632,8 @@ final class MeetingController: ObservableObject {
         quitWaiters = []
         waiters.forEach { $0() }
         if let entry { onFinished?(entry) }
+        if let deleteAudio = speakerFollowUp, let entry { identifySpeakers(entry.id, deleteAudioAfter: deleteAudio) }
+        speakerFollowUp = nil
         purgeExpiredAudio()
     }
 
@@ -687,6 +710,7 @@ final class MeetingController: ObservableObject {
             p.ingestRecordedAudio()
             let echo = UserDefaults.standard.bool(forKey: Key.meetingEchoFilter)
             let base = info
+            let speakers = speakersOn
             p.finish { [weak self] outcome in
                 // A re-transcribe replaces the transcript only with a complete one, or a partial one
                 // with at least as many words; otherwise the previous transcript stays as it was.
@@ -699,7 +723,7 @@ final class MeetingController: ObservableObject {
                     if let onDisk = MeetingFiles.readInfo(entry.folder) { previous.title = onDisk.title }
                     try? MeetingFiles.writeInfo(previous, to: entry.folder)
                 } else {
-                    MeetingPipeline.write(outcome, info: base, folder: entry.folder, echoFilter: echo, keepAudio: keepAudio, stoppedAt: nil)
+                    MeetingPipeline.write(outcome, info: base, folder: entry.folder, echoFilter: echo, keepAudio: keepAudio || speakers, stoppedAt: nil)
                 }
                 DispatchQueue.main.async {
                     guard let self else { return }
@@ -714,6 +738,7 @@ final class MeetingController: ObservableObject {
                         self.notice(.init(text: "Re-transcribing failed: the previous transcript is kept", seconds: 8))
                     } else {
                         done(e)
+                        if speakers, let e { self.identifySpeakers(e.id, deleteAudioAfter: !keepAudio) }
                     }
                     self.recoverInterrupted()
                 }
@@ -739,7 +764,7 @@ final class MeetingController: ObservableObject {
 
     /// Can `e` be transcribed again from its audio right now?
     func canRetranscribe(_ e: MeetingStore.Entry) -> Bool {
-        e.id != currentID && recoveryPipeline == nil && phase == .idle
+        e.id != currentID && recoveryPipeline == nil && phase == .idle && e.id != identifyingID
             && e.info.status != .recording && e.info.status != .transcribing && !MeetingFiles.audioFiles(e.folder).isEmpty
     }
 
@@ -768,6 +793,45 @@ final class MeetingController: ObservableObject {
         }
     }
 
+    /// Tells the other people in a meeting apart from its system.wav, one meeting at a time in the
+    /// background; `deleteAudioAfter`: the keep setting said no, so the audio goes once done.
+    func identifySpeakers(_ id: String, deleteAudioAfter: Bool) {
+        guard !speakerJobs.contains(where: { $0.id == id }), id != identifyingID else { return }
+        speakerJobs.append((id, deleteAudioAfter))
+        nextSpeakerJob()
+    }
+
+    /// A finished meeting with its audio and no speakers yet (Find speakers in the Meetings tab).
+    func canIdentifySpeakers(_ e: MeetingStore.Entry) -> Bool {
+        MeetingSpeakers.models != nil && e.info.status.hasTranscript && e.info.speakers == 0 && e.id != currentID
+            && e.id != recoveringID && e.id != identifyingID
+            && FileManager.default.fileExists(atPath: e.folder.appendingPathComponent(MeetingChannel.others.fileName).path)
+    }
+
+    private func nextSpeakerJob() {
+        guard identifyingID == nil, !speakerJobs.isEmpty else { return }
+        let job = speakerJobs.removeFirst()
+        guard let entry = store.entry(job.id) else { return nextSpeakerJob() }
+        identifyingID = job.id
+        let folder = entry.folder
+        speakerQueue.async { [weak self] in
+            let found = MeetingSpeakers.identify(folder: folder)
+            if job.deleteAudio, var info = MeetingFiles.readInfo(folder), info.status == .ready {
+                MeetingFiles.deleteAudio(folder)
+                info.audioKept = false
+                try? MeetingFiles.writeInfo(info, to: folder)
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.identifyingID = nil
+                self.store.refresh()
+                if let cur = self.store.entry(job.id) { _ = self.store.rename(cur, to: cur.info.title, folderInUse: false) } // a title typed meanwhile
+                Diagnostics.log("speakers: \(found?.speakers ?? 0) voices among the others")
+                self.nextSpeakerJob()
+            }
+        }
+    }
+
     /// A note at the current point of the meeting being recorded.
     func addNote(_ text: String) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -779,7 +843,7 @@ final class MeetingController: ObservableObject {
 
     /// Deletes a finished meeting's audio now (the transcript stays; re-transcribing is no longer possible).
     func deleteAudio(_ e: MeetingStore.Entry) {
-        guard e.id != currentID, e.id != recoveringID else { return }
+        guard e.id != currentID, e.id != recoveringID, e.id != identifyingID else { return }
         MeetingFiles.deleteAudio(e.folder)
         var info = e.info
         info.audioKept = false
@@ -790,7 +854,8 @@ final class MeetingController: ObservableObject {
     /// Audio past its keep period (Settings › Meetings) goes; the transcripts stay.
     func purgeExpiredAudio() {
         let days = AppSettings.meetingAudioDays
-        for e in store.entries where e.id != currentID && e.id != recoveringID && AudioRetention.expired(e.info, days: days) {
+        for e in store.entries where e.id != currentID && e.id != recoveringID && e.id != identifyingID
+            && !speakerJobs.contains(where: { $0.id == e.id }) && AudioRetention.expired(e.info, days: days) {
             MeetingFiles.deleteAudio(e.folder)
             var info = e.info
             info.audioKept = false

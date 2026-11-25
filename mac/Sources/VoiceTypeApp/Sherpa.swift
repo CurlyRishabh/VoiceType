@@ -200,3 +200,89 @@ final class SherpaVAD {
 
     deinit { SherpaOnnxDestroyVoiceActivityDetector(vad) }
 }
+
+/// sherpa-onnx offline speaker diarization (pyannote segmentation + CAM++ embeddings + clustering):
+/// which stretches of a recording belong to which voice. CPU only; not thread-safe.
+final class SherpaDiarizer {
+    private let sd: OpaquePointer
+
+    /// `threshold`: clustering distance when the number of people isn't known (lower = more speakers).
+    init?(segmentation: URL, embedding: URL, threshold: Float = 0.5) {
+        let s = CStrings()
+        var config = SherpaOnnxOfflineSpeakerDiarizationConfig()
+        config.segmentation.pyannote.model = s(segmentation.path)
+        config.segmentation.num_threads = Int32(min(4, ProcessInfo.processInfo.activeProcessorCount))
+        config.segmentation.provider = s("cpu")
+        config.embedding.model = s(embedding.path)
+        config.embedding.num_threads = Int32(min(4, ProcessInfo.processInfo.activeProcessorCount))
+        config.embedding.provider = s("cpu")
+        config.clustering.num_clusters = -1
+        config.clustering.threshold = threshold
+        config.min_duration_on = 0.3
+        config.min_duration_off = 0.5
+        guard let p = SherpaOnnxCreateOfflineSpeakerDiarization(&config) else { return nil }
+        sd = p
+    }
+
+    deinit { SherpaOnnxDestroyOfflineSpeakerDiarization(sd) }
+
+    /// 16 kHz mono samples → turns, times in seconds from the start of `samples`.
+    func process(_ samples: [Float]) -> [SpeakerTurn] {
+        guard !samples.isEmpty else { return [] }
+        let result = samples.withUnsafeBufferPointer { SherpaOnnxOfflineSpeakerDiarizationProcess(sd, $0.baseAddress, Int32($0.count)) }
+        guard let result else { return [] }
+        defer { SherpaOnnxOfflineSpeakerDiarizationDestroyResult(result) }
+        let n = Int(SherpaOnnxOfflineSpeakerDiarizationResultGetNumSegments(result))
+        guard n > 0, let segs = SherpaOnnxOfflineSpeakerDiarizationResultSortByStartTime(result) else { return [] }
+        defer { SherpaOnnxOfflineSpeakerDiarizationDestroySegment(segs) }
+        return (0..<n).map { SpeakerTurn(start: Double(segs[$0].start), end: Double(segs[$0].end), speaker: Int(segs[$0].speaker)) }
+    }
+}
+
+/// Telling the other people on a call apart, after the transcript is written: reads system.wav
+/// (only where the others spoke), finds the voices and rewrites the transcript with "Speaker 1",
+/// "Speaker 2"… Synchronous; run it off the main thread.
+enum MeetingSpeakers {
+    /// The bundled models (app), or `vendor/diarization` next to the package (headless runs).
+    static var models: (segmentation: URL, embedding: URL)? {
+        let candidates = [Bundle.main.resourceURL?.appendingPathComponent("models/diarization"),
+                          URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("vendor/diarization")]
+        for case let dir? in candidates {
+            let seg = dir.appendingPathComponent("segmentation.onnx"), emb = dir.appendingPathComponent("embedding.onnx")
+            if FileManager.default.fileExists(atPath: seg.path), FileManager.default.fileExists(atPath: emb.path) { return (seg, emb) }
+        }
+        return nil
+    }
+
+    /// The meeting's info with `speakers` set (and the transcript files rewritten), or nil when
+    /// there was nothing to do (no system audio, too little Others speech, no models).
+    static func identify(folder: URL) -> MeetingInfo? {
+        guard let models, var info = MeetingFiles.readInfo(folder), info.status.hasTranscript else { return nil }
+        let segments = MeetingFiles.readSegments(folder)
+        guard segments.filter({ $0.channel == .others }).count >= 2,
+              let reader = WavReader(url: folder.appendingPathComponent(MeetingChannel.others.fileName)) else { return nil }
+        let sr = Double(sampleRate)
+        let timeline = SpeakerAssign.Timeline(segments, total: Double(reader.sampleCount) / sr)
+        guard timeline.length >= 4 else { return nil }
+        var samples: [Float] = []
+        samples.reserveCapacity(Int(timeline.length * sr) + sampleRate)
+        for r in timeline.ranges { samples += reader.read(Int(r.lowerBound * sr)..<Int(r.upperBound * sr)) }
+        let t0 = Date()
+        guard let diarizer = SherpaDiarizer(segmentation: models.segmentation, embedding: models.embedding) else {
+            NSLog("VoiceType meeting: speaker models failed to load")
+            return nil
+        }
+        let turns = timeline.original(diarizer.process(samples))
+        let (labelled, count) = SpeakerAssign.assign(segments, turns: turns)
+        if let onDisk = MeetingFiles.readInfo(folder) { info = onDisk } // a rename meanwhile
+        info.speakers = count
+        do {
+            try MeetingFiles.writeTranscript(labelled, info: info, to: folder)
+            try MeetingFiles.writeInfo(info, to: folder)
+        } catch {
+            return nil
+        }
+        NSLog("VoiceType meeting: %d voices among the others (%.0fs of speech analysed in %.1fs)", count, timeline.length, Date().timeIntervalSince(t0))
+        return info
+    }
+}
