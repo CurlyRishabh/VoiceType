@@ -24,7 +24,8 @@ public enum CallApps {
         ("com.skype.skype", App(name: "Skype", meetingTitle: "Skype call", isBrowser: false)),
         ("com.google.Chrome", App(name: "Chrome", meetingTitle: "Browser call", isBrowser: true)),
         ("com.apple.Safari", App(name: "Safari", meetingTitle: "Browser call", isBrowser: true)),
-        ("com.apple.WebKit", App(name: "Safari", meetingTitle: "Browser call", isBrowser: true)),
+        // Safari's web pages use the mic through the shared WebKit process (so may other apps' web views).
+        ("com.apple.WebKit", App(name: "a web page", meetingTitle: "Browser call", isBrowser: true)),
         ("company.thebrowser.", App(name: "Arc", meetingTitle: "Browser call", isBrowser: true)),
         ("com.microsoft.edgemac", App(name: "Edge", meetingTitle: "Browser call", isBrowser: true)),
         ("com.brave.Browser", App(name: "Brave", meetingTitle: "Browser call", isBrowser: true)),

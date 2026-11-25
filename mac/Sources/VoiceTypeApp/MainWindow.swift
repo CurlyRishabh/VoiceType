@@ -678,6 +678,7 @@ struct SettingsPane: View {
     @AppStorage(Key.trigger) var trigger = TriggerKey.fn.rawValue
     @AppStorage(Key.handsFreeShortcut) var handsFreeShortcut = true
     @AppStorage(Key.sounds) var sounds = true
+    @AppStorage(Key.learnCorrections) var learnCorrections = true
     @AppStorage(Key.language) var language = "en"
     @AppStorage(Key.englishEngine) var engine = EngineKind.hindiEnglish.rawValue
     @AppStorage(Key.script) var script = "latin"
@@ -748,6 +749,13 @@ struct SettingsPane: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Play sounds")
                         Text("A soft purr when VoiceType starts listening, and a pop when it stops.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }
+                Toggle(isOn: $learnCorrections) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Learn from my corrections")
+                        Text("When you fix how a dictated word is spelled (a name, a product), it is added to the Dictionary. Shown with Undo.")
                             .font(.caption).foregroundColor(.secondary)
                     }
                 }
@@ -868,7 +876,6 @@ struct SettingsPane: View {
         .onChange(of: meetingShortcut) { app.applyTrigger() }
         .onChange(of: meetingHideFromCapture) { app.applyCaptureHiding() }
         .onChange(of: meetingCallDetection) { app.applyCallDetection() }
-        .onChange(of: meetingAudioDays) { if !app.meetings.isActive { app.meetings.purgeExpiredAudio() } }
         .onChange(of: language) { _ in app.dictation.warmUp(); model.refresh += 1 }
         .onChange(of: translate) { _ in app.dictation.warmUp() }
         .onChange(of: engine) { _ in model.refresh += 1 }
@@ -918,7 +925,7 @@ struct SettingsPane: View {
             } label: {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Keep meeting audio")
-                    Text("Kept audio lets you re-transcribe a meeting (about 115 MB an hour per side). Transcripts and notes are never deleted automatically.")
+                    Text("Kept audio lets you re-transcribe a meeting (about 115 MB an hour per side). Old audio is cleared within the hour after its time is up; transcripts and notes are never deleted automatically.")
                         .font(.caption).foregroundColor(.secondary)
                 }
             }

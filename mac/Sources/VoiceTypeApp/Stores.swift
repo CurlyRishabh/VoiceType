@@ -28,6 +28,7 @@ enum Key {
     static let meetingKeepAudio = "meeting_keep_audio"       // (old) keep audio forever; read once to migrate
     static let meetingAudioDays = "meeting_audio_days"       // AudioRetention: 0 delete now, N days, -1 keep
     static let meetingCallDetection = "meeting_call_detection" // off | ask | auto
+    static let learnCorrections = "learn_corrections"         // add words you fix after dictating to the Dictionary
     static let meetingHideFromCapture = "meeting_hide_from_capture" // flow bar + windows hidden from screen sharing while recording
     static let meetingEchoFilter = "meeting_echo_filter"     // drop my mic's echo of the others (no headphones)
     static let meetingConsentShown = "meeting_consent_shown"
@@ -45,7 +46,7 @@ enum AppSettings {
             Key.capitalize: true, Key.finalPunct: true, Key.polish: true, Key.polishStyle: "casual",
             Key.hotkey: 0, Key.history: true, Key.keepRecordings: false, Key.showHUD: true,
             Key.trigger: "fn", Key.flowBarIdle: false, Key.handsFreeShortcut: true, Key.sounds: true, Key.onboardingDone: false,
-            Key.meetingShortcut: true, Key.meetingMaxMinutes: MeetingLimit.defaultMinutes, Key.meetingKeepAudio: false, Key.meetingCallDetection: "ask",
+            Key.meetingShortcut: true, Key.meetingMaxMinutes: MeetingLimit.defaultMinutes, Key.meetingKeepAudio: false, Key.meetingCallDetection: "ask", Key.learnCorrections: true,
             Key.meetingHideFromCapture: true, Key.meetingEchoFilter: true, Key.meetingConsentShown: false,
             Key.style(.messages): StyleChoice.casual.rawValue, Key.style(.email): StyleChoice.formal.rawValue,
             Key.style(.notes): StyleChoice.notes.rawValue, Key.style(.other): StyleChoice.off.rawValue,

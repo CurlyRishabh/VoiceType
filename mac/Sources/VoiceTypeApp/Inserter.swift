@@ -45,6 +45,38 @@ enum Inserter {
         return (ns.substring(to: start), ns.substring(from: end))
     }
 
+    /// The focused text field and the text around the cursor, just before a paste (nil for
+    /// password fields, fields that don't expose their text, or without Accessibility).
+    struct Field {
+        let element: AXUIElement
+        let before: String
+        let after: String
+    }
+
+    static func focusedField() -> Field? {
+        guard isTrusted else { return nil }
+        let system = AXUIElementCreateSystemWide()
+        AXUIElementSetMessagingTimeout(system, 0.25)
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+              let el = focused, CFGetTypeID(el) == AXUIElementGetTypeID() else { return nil }
+        let element = el as! AXUIElement
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        var subrole: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subrole)
+        if (subrole as? String) == (kAXSecureTextFieldSubrole as String) { return nil }
+        let (before, after) = focusedContext()
+        guard let before, let after, value(of: element) != nil else { return nil }
+        return Field(element: element, before: before, after: after)
+    }
+
+    /// A field's whole text (nil if it can't be read any more).
+    static func value(of element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &value) == .success else { return nil }
+        return value as? String
+    }
+
     static func insert(_ text: String) -> Outcome {
         let pb = NSPasteboard.general
         let saved = snapshot(pb)

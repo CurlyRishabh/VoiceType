@@ -152,9 +152,15 @@ final class MeetingController: ObservableObject {
     @Published private(set) var recoveringID: String?
     @Published private(set) var title = "Meeting"
     /// What has been transcribed so far in the meeting being recorded (live view), in arrival order.
-    @Published private(set) var liveSegments: [TranscriptSegment] = []
+    @Published private(set) var liveSegments: [TranscriptSegment] = [] { didSet { updateLiveLines() } }
+    /// liveSegments (echo removed) and notes as transcript lines, rebuilt only when either changes.
+    @Published private(set) var liveLines: [TranscriptLine] = []
+    /// The note being typed in the live view (kept here so wrapping up doesn't discard it).
+    @Published var noteDraft = ""
+    /// Last time the others were clearly audible (uptime), so a call isn't treated as over while they talk.
+    private(set) var othersHeardAt: TimeInterval = 0
     /// Notes typed during the current meeting.
-    @Published private(set) var notes: [MeetingNote] = []
+    @Published private(set) var notes: [MeetingNote] = [] { didSet { updateLiveLines() } }
     /// The meeting being re-transcribed (it shares the recovery slot).
     @Published private(set) var retranscribingID: String?
     /// The current meeting was started for a call VoiceType detected (it may stop it when the call ends).
@@ -296,6 +302,8 @@ final class MeetingController: ObservableObject {
         trouble = [:]
         liveSegments = []
         notes = []
+        noteDraft = ""
+        othersHeardAt = 0
         startedForCall = forCall
         systemAudio = .unknown
         limit = MeetingLimit(minutes: UserDefaults.standard.integer(forKey: Key.meetingMaxMinutes))
@@ -344,7 +352,12 @@ final class MeetingController: ObservableObject {
     }
 
     private func wire(_ p: MeetingPipeline) {
-        p.onLevel = { [weak self] ch, level in DispatchQueue.main.async { self?.onLevel?(ch, level) } }
+        p.onLevel = { [weak self] ch, level in
+            DispatchQueue.main.async {
+                if ch == .others, level > 0.15 { self?.othersHeardAt = ProcessInfo.processInfo.systemUptime }
+                self?.onLevel?(ch, level)
+            }
+        }
         p.onWords = { [weak self] n in DispatchQueue.main.async { self?.words = n } }
         p.onSegments = { [weak self, weak p] new in
             DispatchQueue.main.async {
@@ -567,6 +580,14 @@ final class MeetingController: ObservableObject {
     }
 
     private func finished(_ info: MeetingInfo, folder: URL) {
+        let draft = noteDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !draft.isEmpty { // typed but not saved when the meeting ended: keep it
+            var all = MeetingFiles.readNotes(folder)
+            all.append(MeetingNote(at: info.durationSeconds, text: draft))
+            try? MeetingFiles.writeNotes(all, to: folder)
+            if info.status.hasTranscript { try? MeetingFiles.writeMarkdown(MeetingFiles.readSegments(folder), info: info, to: folder) }
+        }
+        noteDraft = ""
         pipeline = nil
         liveSegments = []
         notes = []
@@ -650,8 +671,10 @@ final class MeetingController: ObservableObject {
 
     /// Runs a meeting's saved audio through the pipeline again (recovery, re-transcribe), in the one
     /// background slot. `done` gets the finished entry (main thread), then pending recoveries go on.
+    /// `previous`: for a re-transcribe, the meeting as it was; if the new run fails it is put back
+    /// untouched instead of a failed, empty transcript replacing a good one.
     private func transcribeFromDisk(_ entry: MeetingStore.Entry, info: MeetingInfo, spec: EngineSpec, vad: URL, keepAudio: Bool,
-                                    done: @escaping (MeetingStore.Entry?) -> Void) {
+                                    previous: MeetingInfo? = nil, done: @escaping (MeetingStore.Entry?) -> Void) {
         var info = info
         do {
             let p = try MeetingPipeline(config: config(entry.folder, spec, vad), speech: speech, startHostTime: nil, writeAudio: false)
@@ -661,21 +684,40 @@ final class MeetingController: ObservableObject {
             let echo = UserDefaults.standard.bool(forKey: Key.meetingEchoFilter)
             let base = info
             p.finish { [weak self] outcome in
-                MeetingPipeline.write(outcome, info: base, folder: entry.folder, echoFilter: echo, keepAudio: keepAudio, stoppedAt: nil)
+                let failedAll = outcome.chunks > 0 && outcome.failedChunks >= outcome.chunks
+                if var previous, failedAll {
+                    if let onDisk = MeetingFiles.readInfo(entry.folder) { previous.title = onDisk.title }
+                    previous.error = nil
+                    try? MeetingFiles.writeInfo(previous, to: entry.folder)
+                } else {
+                    MeetingPipeline.write(outcome, info: base, folder: entry.folder, echoFilter: echo, keepAudio: keepAudio, stoppedAt: nil)
+                }
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.recoveryPipeline = nil
                     self.recoveringID = nil
                     self.retranscribingID = nil
                     self.store.refresh()
-                    done(self.store.entry(entry.id))
+                    // A title typed meanwhile: the folder follows now that it is free.
+                    var e = self.store.entry(entry.id)
+                    if let cur = e { e = self.store.rename(cur, to: cur.info.title, folderInUse: false) ?? cur }
+                    if previous != nil, failedAll {
+                        self.notice(.init(text: "Re-transcribing failed: the previous transcript is kept", seconds: 8))
+                    } else {
+                        done(e)
+                    }
                     self.recoverInterrupted()
                 }
             }
         } catch {
-            info.status = .failed
-            info.error = error.localizedDescription
-            try? MeetingFiles.writeInfo(info, to: entry.folder)
+            if let previous {
+                try? MeetingFiles.writeInfo(previous, to: entry.folder)
+                notice(.init(text: "Couldn’t re-transcribe: \(error.localizedDescription)", seconds: 8))
+            } else {
+                info.status = .failed
+                info.error = error.localizedDescription
+                try? MeetingFiles.writeInfo(info, to: entry.folder)
+            }
             retranscribingID = nil
             store.refresh()
             done(store.entry(entry.id))
@@ -710,7 +752,7 @@ final class MeetingController: ObservableObject {
         recoveryTried.insert(e.id) // an interrupted re-transcribe falls back to the old transcript.json
         retranscribingID = e.id
         store.refresh()
-        transcribeFromDisk(e, info: info, spec: spec, vad: vad, keepAudio: true) { [weak self] done in
+        transcribeFromDisk(e, info: info, spec: spec, vad: vad, keepAudio: true, previous: e.info) { [weak self] done in
             if let done { self?.onRetranscribed?(done) }
         }
     }
@@ -754,6 +796,16 @@ final class MeetingController: ObservableObject {
     }
 
     // MARK: helpers
+
+    private func updateLiveLines() {
+        let segs = UserDefaults.standard.bool(forKey: Key.meetingEchoFilter) ? EchoFilter.apply(liveSegments).segments : liveSegments
+        liveLines = MeetingTranscript.lines(segs, notes: notes)
+    }
+
+    /// Seconds since the others were last heard (infinite before they ever were).
+    var secondsSinceOthersHeard: TimeInterval {
+        othersHeardAt == 0 ? .infinity : ProcessInfo.processInfo.systemUptime - othersHeardAt
+    }
 
     private func setPhase(_ p: Phase) {
         phase = p

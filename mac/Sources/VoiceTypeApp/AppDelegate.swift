@@ -15,6 +15,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     /// Notices calls starting and ending in other apps (Settings › Meetings › When a call starts).
     let calls = CallDetector()
     private var purgeTimer: Timer?
+    /// Watches the field a dictation went into for fixes worth adding to the Dictionary.
+    private let corrections = CorrectionWatch()
+    /// A call that started while a meeting was still active.
+    private var missedCall: CallApps.App?
     let flowBar = FlowBar()
 
     private let keys = KeyMonitor()
@@ -205,6 +209,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         applyCaptureHiding()
         if p == .idle { flowBar.setMeeting(nil) } else { updateMeetingBar() }
         mainModel.refresh += 1
+        // A call that started while the last meeting was wrapping up: offer it now.
+        if p == .idle, let app = missedCall, calls.activeCall == app {
+            missedCall = nil
+            callEvent(.started(app))
+        }
     }
 
     /// While a meeting records (and the setting is on), the flow bar and every VoiceType window ask
@@ -266,6 +275,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
                              meetingID: e.id)
     }
 
+    // MARK: learning from corrections
+
+    private func learned(_ entries: [PersonalDictionary.Entry]) {
+        var dict = AppSettings.dictionary
+        for e in entries { dict = dict.plus(e) }
+        AppSettings.dictionary = dict
+        Diagnostics.log("learned \(entries.count) dictionary entr\(entries.count == 1 ? "y" : "ies")")
+        let names = entries.map { "“\($0.to)”" }.joined(separator: ", ")
+        let undo = { [weak self] in
+            var d = AppSettings.dictionary
+            for e in entries { d = d.minus(e.from) }
+            AppSettings.dictionary = d
+            self?.mainModel.refresh += 1
+        }
+        mainModel.refresh += 1
+        if dictation.state == .idle && !meetings.isActive {
+            flowBar.notice("Added \(names) to Dictionary", action: "Undo", onAction: undo)
+        }
+    }
+
     // MARK: calls in other apps
 
     /// Starts or stops the call detector to match Settings › Meetings.
@@ -280,19 +309,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
         Diagnostics.log("call: \(event), mode \(mode), meeting \(meetings.phase)")
         switch event {
         case .started(let app):
-            guard meetings.phase == .idle, !keys.isPaused else { return }
-            if mode == "auto" {
+            guard meetings.phase == .idle else {
+                if meetings.phase == .finishing { missedCall = app }
+                return
+            }
+            // A browser holding the mic may be voice typing or an AI voice chat: always ask.
+            if mode == "auto" && !app.isBrowser {
                 meetings.start(title: app.meetingTitle, forCall: true)
             } else {
-                meetingNotice(.init(text: "\(app.name) call started. Record it?", action: "Record",
+                meetingNotice(.init(text: "Call started in \(app.name). Record it?", action: "Record",
                                     run: { [weak self] in self?.meetings.start(title: app.meetingTitle, forCall: true) }, seconds: 15))
             }
         case .ended(let app):
+            if missedCall == app { missedCall = nil }
             guard meetings.isRecording else { return }
-            if mode == "auto" && meetings.startedForCall {
+            // Only when the others have also gone quiet: an app that releases the mic on mute isn't a hang-up.
+            if mode == "auto" && meetings.startedForCall && meetings.secondsSinceOthersHeard > 20 {
                 meetings.stop(.callEnded)
             } else {
-                meetingNotice(.init(text: "\(app.name) call ended. Stop recording?", action: "Stop",
+                meetingNotice(.init(text: "Call in \(app.name) ended. Stop recording?", action: "Stop",
                                     run: { [weak self] in self?.meetings.stop() }, seconds: 15))
             }
         }
@@ -324,9 +359,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUser
     private func deliver(_ text: String, appName: String?) {
         lastText = text
         lastApp = appName
+        let field = Inserter.focusedField()
         switch Inserter.insert(text) {
         case .pasted:
-            break
+            if let field, UserDefaults.standard.bool(forKey: Key.learnCorrections) {
+                corrections.watch(field, typed: text) { [weak self] learned in self?.learned(learned) }
+            }
         case .copiedOnly:
             // No Accessibility (a fresh or re-signed build loses it): say why it didn't paste.
             flowBar.notice("Copied, not pasted: allow Accessibility", action: "Fix") { [weak self] in self?.showOnboarding(at: .typing) }

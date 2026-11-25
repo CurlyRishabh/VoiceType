@@ -12,6 +12,7 @@ struct MeetingsView: View {
     var body: some View {
         if let id = model.openMeeting, let entry = store.entry(id) {
             MeetingDetailView(app: app, model: model, store: store, meetings: meetings, entry: entry)
+                .id(entry.info.startedAt) // another meeting = fresh view state (a rename keeps it)
         } else {
             list
         }
@@ -399,9 +400,7 @@ private struct LiveTranscript: View {
     @StateObject private var ui = LiveUI()
 
     var body: some View {
-        let echo = UserDefaults.standard.bool(forKey: Key.meetingEchoFilter)
-        let segments = echo ? EchoFilter.apply(meetings.liveSegments).segments : meetings.liveSegments
-        let lines = MeetingTranscript.lines(segments, notes: meetings.notes)
+        let lines = meetings.liveLines
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 if meetings.phase == .finishing {
@@ -429,13 +428,14 @@ private struct LiveTranscript: View {
                         }
                         .padding(.bottom, 8)
                     }
-                    .onChange(of: lines.count) { _, _ in if ui.follow { withAnimation { proxy.scrollTo(-1, anchor: .bottom) } } }
+                    // Segments, not lines: a long turn grows one line without adding any.
+                    .onChange(of: meetings.liveSegments.count + meetings.notes.count) { _, _ in
+                        if ui.follow { withAnimation { proxy.scrollTo(-1, anchor: .bottom) } }
+                    }
                     .onAppear { proxy.scrollTo(-1, anchor: .bottom) }
                 }
             }
-            if meetings.phase == .recording {
-                NoteField(placeholder: "Type a note, Return to add it at this moment") { meetings.addNote($0) }
-            }
+            LiveNoteField(meetings: meetings)
         }
     }
 }
@@ -467,4 +467,24 @@ private struct NoteField: View {
 private final class LiveUI: ObservableObject {
     @Published var follow = true
     @Published var text = ""
+}
+
+/// The live note box; its text lives in the controller, so a meeting that stops mid-sentence still
+/// gets the note (saved when the transcript is written).
+private struct LiveNoteField: View {
+    @ObservedObject var meetings: MeetingController
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "square.and.pencil").font(.system(size: 12)).foregroundColor(.orange).accessibilityHidden(true)
+            TextField("Type a note, Return to add it at this moment", text: $meetings.noteDraft).textFieldStyle(.plain).font(.system(size: 13))
+                .onSubmit {
+                    meetings.addNote(meetings.noteDraft)
+                    meetings.noteDraft = ""
+                }
+        }
+        .padding(.horizontal, 10).frame(height: 32)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Mist.card))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Mist.border))
+    }
 }
