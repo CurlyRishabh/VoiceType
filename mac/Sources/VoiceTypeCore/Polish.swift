@@ -146,6 +146,12 @@ public struct CleanupPipeline: Sendable {
     public func process(_ raw: String, _ settings: CleanupSettings) async -> CleanupResult {
         let scripted = settings.script == .latin ? Transliterator.toLatin(raw) : raw
         let stage1 = cleaner.clean(scripted, settings.options)
+        // A snippet is typed exactly as saved: no polish, which could reword it or the cue.
+        let snipped = settings.options.snippets.apply(stage1)
+        if snipped.used > 0 {
+            return CleanupResult(raw: raw, stage1: stage1, text: snipped.text, polished: false,
+                                 fallbackReason: settings.polishEnabled ? "snippet: not polished" : nil)
+        }
         guard settings.polishEnabled, let polisher, !stage1.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return CleanupResult(raw: raw, stage1: stage1, text: stage1, polished: false)
         }

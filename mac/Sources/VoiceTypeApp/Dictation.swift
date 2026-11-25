@@ -69,8 +69,10 @@ final class Dictation {
         return DecodePlan.chunks(samples: samples, segments: segments, whisper: whisper, language: spec.language, tokenBudget: !cpp)
     }
 
-    /// The Dictionary's spellings, given to whisper.cpp so it hears those names correctly.
-    private var vocabularyPrompt: String? { WhisperPrompt.build(AppSettings.dictionary.entries.map(\.to)) }
+    /// The Dictionary's spellings, then names on screen, given to whisper.cpp so it hears those names correctly.
+    private var vocabularyPrompt: String? { WhisperPrompt.build(AppSettings.dictionary.entries.map(\.to), extra: screenNames) }
+    /// Names read from the window you're dictating into, for this dictation only.
+    private var screenNames: [String] = []
 
     func warmUp() {
         speech.warmUp(AppSettings.engineSpec(models))
@@ -112,6 +114,7 @@ final class Dictation {
         rec.onLevel = { [weak self] in self?.onLevel?($0) }
         let gen = generation + 1
         generation = gen
+        readScreenNames(pid: front?.processIdentifier, field: ctx, gen: gen)
         rec.onAutoStop = { [weak self] _ in
             guard let self, self.generation == gen else { return }
             self.onEndedByItself?()
@@ -215,6 +218,37 @@ final class Dictation {
                 }
             }
         }
+    }
+
+    /// Reads names on screen while you speak (ready long before the first transcription): the window
+    /// title, the text around the cursor, the window's visible text.
+    private func readScreenNames(pid: pid_t?, field: (before: String?, after: String?), gen: Int) {
+        screenNames = []
+        guard UserDefaults.standard.bool(forKey: Key.screenNames), Inserter.isTrusted, let pid else { return }
+        let near = String((field.before ?? "").suffix(3000)) + " " + String((field.after ?? "").prefix(1000))
+        // VoiceType's own windows (Scratchpad): just the note around the cursor.
+        let own = pid == ProcessInfo.processInfo.processIdentifier
+        DispatchQueue.global(qos: .userInitiated).async {
+            let t0 = ProcessInfo.processInfo.systemUptime
+            let w = own ? (title: nil, texts: []) : ScreenContext.windowTexts(pid: pid)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.generation == gen else { return }
+                // On the main thread: the spell checker isn't safe elsewhere.
+                self.screenNames = ScreenNames.extract([w.title ?? "", near, w.texts.joined(separator: "\n")], isWord: Self.isWord)
+                let ms = Int((ProcessInfo.processInfo.systemUptime - t0) * 1000)
+                Diagnostics.log("screen names: \(self.screenNames.count) from \(w.texts.count) texts in \(ms) ms")
+            }
+        }
+    }
+
+    /// The spell checker's answers, kept across dictations (main thread; ~0.7 ms a word otherwise).
+    private static var wordCache: [String: Bool] = [:]
+    private static func isWord(_ w: String) -> Bool {
+        if let known = wordCache[w] { return known }
+        if wordCache.count > 20_000 { wordCache.removeAll() }
+        let answer = CorrectionWatch.isWord(w)
+        wordCache[w] = answer
+        return answer
     }
 
     /// Hands-free: transcribe completed sentences while the user keeps talking.

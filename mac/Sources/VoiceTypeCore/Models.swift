@@ -53,6 +53,18 @@ public struct PersonalDictionary: Sendable, Equatable {
         PersonalDictionary(entries.filter { $0.from.lowercased() != from.lowercased() })
     }
 
+    /// A fix learned from your edits. A fix of a word the Dictionary itself typed changes that entry
+    /// instead of adding one ("Kreta nt → Kritnat", then "Kritnat" fixed to "Kritant": "Kreta nt →
+    /// Kritant"), and changing it back to what was heard ("Rishabh" back to "Rishab") removes it.
+    public func learning(_ e: Entry) -> PersonalDictionary {
+        let from = e.from.lowercased(), to = e.to.lowercased()
+        let made = entries.filter { $0.to.lowercased() == from }
+        guard !made.isEmpty else { return plus(e) }
+        var d = PersonalDictionary(entries.filter { $0.to.lowercased() != from })
+        for x in made where x.from.lowercased() != to { d = d.plus(.init(x.from, e.to)) }
+        return d
+    }
+
     public static func == (a: PersonalDictionary, b: PersonalDictionary) -> Bool { a.entries == b.entries }
 
     private static func sanitize(_ s: String) -> String {
@@ -67,6 +79,8 @@ public struct CleanupOptions: Sendable, Equatable {
     public var autoCapitalize = true
     public var addFinalPunctuation = true
     public var dictionary = PersonalDictionary.empty
+    /// Spoken cues typed as saved text (after the Dictionary; a dictation with one isn't polished).
+    public var snippets = SnippetSet.empty
     /// False when inserting mid-sentence, so the first word isn't force-capitalised.
     public var startsSentence = true
     public init() {}

@@ -1,14 +1,29 @@
 import AppKit
 import AVFoundation
 import SwiftUI
+import UserNotifications
 import VoiceTypeCore
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
     let models = ModelStore()
     let history = HistoryStore()
+    let scratchpad = ScratchpadStore()
     let polisher = AppleIntelligencePolisher()
     lazy var speech = SpeechHost(modelsRoot: models.root)
     lazy var dictation = Dictation(models: models, speech: speech, polisher: polisher, history: history)
+    let meetingStore = MeetingStore()
+    lazy var meetings = MeetingController(models: models, speech: speech, store: meetingStore)
+    /// Notices calls starting and ending in other apps (Settings › Meetings › When a call starts).
+    let calls = CallDetector()
+    private var purgeTimer: Timer?
+    /// Watches the field a dictation went into for fixes worth adding to the Dictionary.
+    private let corrections = CorrectionWatch()
+    /// A call that started while a meeting was still active.
+    private var missedCall: CallApps.App?
+    /// The call card on offer: which call, the seconds it has left (they only run while the card is
+    /// on screen and the mouse isn't on it), and whether recording starts when they run out.
+    private var callOffer: (app: CallApps.App, left: Double, autoStart: Bool)?
+    private var callTimer: Timer?
     let flowBar = FlowBar()
 
     private let keys = KeyMonitor()
@@ -25,25 +40,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var licensesWindow: NSWindow?
     private var lastText: String?
     private var lastApp: String?
+    /// A meeting notice that arrived while a dictation had the flow bar.
+    private var noticeQueue: [MeetingController.Notice] = []
+    /// Flow bar and windows kept out of screen capture (a meeting is on and the setting allows it).
+    private var captureHidden = false
 
     // MARK: launch
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // One VoiceType at a time: two copies (an installed one and a fresh build, say) would both
+        // hear the key and paste every dictation twice. The one already running wins.
+        if let other = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && !$0.isTerminated }) {
+            Diagnostics.log("second copy started; already running: \(other.bundleURL?.path ?? "?"); quitting")
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "VoiceType is already running"
+            alert.informativeText = "Another copy is open (\(other.bundleURL?.path ?? "unknown location")). Quit it first if you meant to use this one; two copies would type everything twice."
+            alert.runModal()
+            NSApp.terminate(nil)
+            return
+        }
         AppSettings.registerDefaults()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
-        setIcon(listening: false)
+        refreshIcon()
 
         flowBar.model.onStop = { [weak self] in self?.send(.stopButton) }
+        flowBar.model.onMeetingStop = { [weak self] in self?.meetings.stop() }
         flowBar.model.onCancel = { [weak self] in self?.send(.cancelButton) }
         flowBar.model.onOpen = { [weak self] in self?.showMainWindow() }
+        flowBar.model.onMeetingOpen = { [weak self] in
+            guard let self, let id = self.meetings.currentID else { return }
+            self.showMeeting(id)
+        }
 
         keys.onTrigger = { [weak self] down, time in self?.send(down ? .keyDown(time) : .keyUp(time)) }
         keys.onHandsFreeKey = { [weak self] in self?.send(.handsFreeKey) }
         keys.onOtherKey = { [weak self] in self?.send(.otherKey) }
         keys.onEscape = { [weak self] in self?.send(.escape) }
+        keys.onMeetingKey = { [weak self] in self?.toggleMeetingRecording() }
 
         dictation.onState = { [weak self] s in self?.dictationState(s) }
         dictation.onLevel = { [weak self] in self?.flowBar.model.push($0) }
@@ -56,6 +94,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         dictation.onResult = { [weak self] r, target in self?.deliver(r.text, appName: target.appName) }
+        history.onSaveFailed = { [weak self] _ in
+            self?.meetingNotice(.init(text: "Couldn’t save History. Is the disk full?", seconds: 8))
+        }
+        scratchpad.onSaveFailed = { [weak self] in
+            self?.meetingNotice(.init(text: "Couldn’t save the Scratchpad. Copy your note somewhere safe", seconds: 10))
+        }
+
+        meetings.onPhase = { [weak self] in self?.meetingPhase($0) }
+        meetings.onTick = { [weak self] in self?.updateMeetingBar() }
+        meetings.onLevel = { [weak self] ch, level in self?.flowBar.model.pushMeeting(ch, level) }
+        meetings.onNotice = { [weak self] in self?.meetingNotice($0) }
+        meetings.onFinished = { [weak self] in self?.meetingFinished($0) }
+        meetings.onRecovered = { [weak self] e in
+            self?.meetingNotice(.init(text: "Transcribed an interrupted meeting", action: "Open", run: { self?.showMeeting(e.id) }, seconds: 8))
+        }
+        meetings.onNeedsSetup = { [weak self] in self?.showSettings() }
+        meetings.onRetranscribed = { [weak self] e in
+            self?.meetingNotice(.init(text: e.info.status == .failed ? "Re-transcribing failed" : "Transcribed again",
+                                      action: "Open", run: { self?.showMeeting(e.id) }, seconds: 8))
+        }
+        calls.onEvent = { [weak self] in self?.callEvent($0) }
+        applyCallDetection()
+        // Meeting audio past its keep period goes once an hour (and at launch, with recovery).
+        let purge = Timer(timeInterval: 3600, repeats: true) { [weak self] _ in
+            guard let self, !self.meetings.isActive else { return }
+            self.meetings.purgeExpiredAudio()
+        }
+        RunLoop.main.add(purge, forMode: .common)
+        purgeTimer = purge
+        Diagnostics.log("launch: accessibility \(Permissions.isGranted(.accessibility) ? "on" : "OFF"), input monitoring \(Permissions.isGranted(.inputMonitoring) ? "on" : "OFF"), microphone \(Permissions.isGranted(.microphone) ? "on" : "OFF"), trigger \(TriggerKey.current.rawValue)")
+        // A meeting open in the detail view follows its folder when that is renamed.
+        meetingStore.onRename = { [weak self] old, new in
+            if self?.mainModel.openMeeting == old { self?.mainModel.openMeeting = new }
+        }
+        if MeetingNotifier.available { UNUserNotificationCenter.current().delegate = self }
+        // A meeting the app didn't finish (crash, quit while recording): transcribe its audio now.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.meetings.recoverInterrupted() }
 
         applyTrigger()
         dictation.warmUp()
@@ -64,10 +139,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.applyTrigger() // Input Monitoring may have just been granted
         }
 
+        installMainMenu()
         if !UserDefaults.standard.bool(forKey: Key.onboardingDone) || setupProblem != nil { showOnboarding() }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    /// Opening VoiceType again while it runs (Finder, Spotlight, Launchpad) shows its window, as other
+    /// apps do. Without this a menu-bar app does nothing visible.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !UserDefaults.standard.bool(forKey: Key.onboardingDone) { showOnboarding() } else { showMainWindow() }
+        return false
+    }
+
+    /// whisper.cpp's Metal backend aborts the process at exit if a model is still loaded.
+    func applicationWillTerminate(_ notification: Notification) {
+        scratchpad.saveNow()
+        speech.releaseAndWait()
+    }
+
+    /// Key commands while a VoiceType window is in front (a menu-bar app shows no menus): ⌘, ⌘Q ⌘W ⌘M,
+    /// and the Edit commands, without which ⌘C / ⌘V / ⌘Z do nothing in the app's text fields.
+    private func installMainMenu() {
+        let main = NSMenu()
+        func submenu(_ title: String, _ items: [NSMenuItem]) {
+            let holder = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            let menu = NSMenu(title: title)
+            items.forEach(menu.addItem)
+            holder.submenu = menu
+            main.addItem(holder)
+        }
+        func item(_ title: String, _ action: Selector?, _ key: String, _ mods: NSEvent.ModifierFlags = .command) -> NSMenuItem {
+            let i = NSMenuItem(title: title, action: action, keyEquivalent: key)
+            i.keyEquivalentModifierMask = mods
+            return i
+        }
+        let settings = item("Settings…", #selector(openSettings), ",")
+        settings.target = self
+        submenu("VoiceType", [
+            settings, .separator(),
+            item("Hide VoiceType", #selector(NSApplication.hide(_:)), "h"),
+            item("Hide Others", #selector(NSApplication.hideOtherApplications(_:)), "h", [.command, .option]),
+            item("Show All", #selector(NSApplication.unhideAllApplications(_:)), ""),
+            .separator(),
+            item("Quit VoiceType", #selector(NSApplication.terminate(_:)), "q"),
+        ])
+        submenu("Edit", [
+            item("Undo", Selector(("undo:")), "z"),
+            item("Redo", Selector(("redo:")), "z", [.command, .shift]),
+            .separator(),
+            item("Cut", #selector(NSText.cut(_:)), "x"),
+            item("Copy", #selector(NSText.copy(_:)), "c"),
+            item("Paste", #selector(NSText.paste(_:)), "v"),
+            item("Select All", #selector(NSText.selectAll(_:)), "a"),
+        ])
+        let window = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(item("Minimize", #selector(NSWindow.performMiniaturize(_:)), "m"))
+        windowMenu.addItem(item("Close", #selector(NSWindow.performClose(_:)), "w"))
+        window.submenu = windowMenu
+        main.addItem(window)
+        NSApp.mainMenu = main
+        NSApp.windowsMenu = windowMenu
+    }
+
+    /// Quitting mid-meeting stops and saves it, and waits (up to 15 s) for the transcript to finish.
+    /// If it takes longer, the audio is on disk and the next launch transcribes it.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let wait = meetings.prepareToQuit { NSApp.reply(toApplicationShouldTerminate: true) }
+        return wait ? .terminateLater : .terminateNow
+    }
 
     // MARK: trigger key -> gesture -> dictation
 
@@ -129,7 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func dictationState(_ s: Dictation.State) {
-        setIcon(listening: s == .listening)
+        refreshIcon()
         switch s {
         case .listening:
             flowBar.set(dictation.handsFree ? .handsFree : .listening)
@@ -137,17 +278,297 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             flowBar.set(.typing)
         case .idle:
             if flowBar.model.phase != .notice { flowBar.set(.idle) }
+            if !noticeQueue.isEmpty {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.showNextNotice() }
+            }
         }
+    }
+
+    // MARK: meetings
+
+    private func meetingPhase(_ p: MeetingController.Phase) {
+        if p != .idle, callOffer != nil { withdrawCallOffer() } // started another way (shortcut, menu)
+        refreshIcon()
+        applyCaptureHiding()
+        if p == .idle { flowBar.setMeeting(nil) } else { updateMeetingBar() }
+        mainModel.refresh += 1
+        // A call that started while the last meeting was wrapping up: offer it now.
+        if p == .idle, let app = missedCall, calls.activeCall == app {
+            missedCall = nil
+            callEvent(.started(app))
+        }
+    }
+
+    /// While a meeting records (and the setting is on), the flow bar and every VoiceType window ask
+    /// macOS to be left out of screen shares and recordings. Also called when the setting changes.
+    func applyCaptureHiding() {
+        captureHidden = meetings.isActive && UserDefaults.standard.bool(forKey: Key.meetingHideFromCapture)
+        flowBar.hideFromCapture(captureHidden)
+        for w in NSApp.windows { w.sharingType = captureHidden ? .none : .readOnly }
+    }
+
+    private func updateMeetingBar() {
+        guard meetings.isActive else { return }
+        let micOnly = meetings.systemAudio == .silent || meetings.systemAudio == .unavailable
+        flowBar.setMeeting(.init(elapsed: meetings.elapsed, words: meetings.words, title: meetings.title,
+                                 wrappingUp: meetings.phase == .finishing, micOnly: micOnly))
+    }
+
+    /// Notices with an action (meetings, calls, Dictionary) take turns: they wait while a dictation
+    /// is using the flow bar or another one is showing, so a call prompt is never replaced.
+    private func meetingNotice(_ n: MeetingController.Notice) {
+        noticeQueue.append(n)
+        showNextNotice()
+    }
+
+    private func showNextNotice() {
+        guard dictation.state == .idle, flowBar.model.phase != .notice, flowBar.model.phase != .call, !noticeQueue.isEmpty else { return }
+        let n = noticeQueue.removeFirst()
+        let run = n.run
+        flowBar.model.onNoticeAction = { [weak self] in
+            run?()
+            self?.flowBar.set(.idle) // done with it (back to the meeting pill, if any)
+            self?.showNextNotice()
+        }
+        flowBar.notice(n.text, action: n.run == nil ? nil : n.action, seconds: n.seconds) { [weak self] in
+            DispatchQueue.main.async { self?.showNextNotice() }
+            return .idle
+        }
+    }
+
+    private func meetingFinished(_ e: MeetingStore.Entry) {
+        mainModel.refresh += 1
+        let info = e.info
+        if info.status == .partial {
+            meetingNotice(.init(text: "Transcript ready, but parts couldn’t be transcribed (audio kept)", action: "Open",
+                                run: { [weak self] in self?.showMeeting(e.id) }, seconds: 10))
+            return
+        }
+        if info.status == .failed {
+            meetingNotice(.init(text: "The meeting transcript failed", action: "Open", run: { [weak self] in self?.showMeeting(e.id) }, seconds: 8))
+            return
+        }
+        if MeetingLimit.looksAccidental(words: info.wordCount, seconds: info.durationSeconds) {
+            meetingNotice(.init(text: "Started by mistake? Only \(info.wordCount) words", action: "Discard", run: { [weak self] in
+                guard let self else { return }
+                if self.mainModel.openMeeting == e.id { self.mainModel.openMeeting = nil }
+                self.meetingStore.delete(e)
+            }, seconds: 10))
+            return
+        }
+        let why: String
+        switch info.stopReason {
+        case .sleep?: why = ": stopped when your Mac went to sleep"
+        case .maxLength?: why = ": stopped at the length limit"
+        case .lowDisk?: why = ": stopped, disk almost full"
+        case .callEnded?: why = ": the call ended"
+        default: why = ""
+        }
+        meetingNotice(.init(text: "Transcript ready\(why)", action: "Open", run: { [weak self] in self?.showMeeting(e.id) }, seconds: 8))
+        MeetingNotifier.post(title: "Transcript ready", body: "\(info.title) · \(MeetingDates.duration(info.durationSeconds)) · \(info.wordCount.formatted()) words",
+                             meetingID: e.id)
+    }
+
+    // MARK: learning from corrections
+
+    private func learned(_ found: [PersonalDictionary.Entry]) {
+        let entries = found.filter { !AppSettings.isUnlearned($0) }
+        guard !entries.isEmpty else { return Diagnostics.log("learned nothing: those fixes were undone before") }
+        let before = AppSettings.dictionary
+        let dict = entries.reduce(before) { $0.learning($1) }
+        AppSettings.dictionary = dict
+        Diagnostics.log("learned \(entries.count) dictionary entr\(entries.count == 1 ? "y" : "ies")")
+        let added = dict.entries.filter { !before.entries.contains($0) }
+        let names = entries.map { "“\($0.to)”" }.joined(separator: ", ")
+        let undo = { [weak self] in
+            // Back to exactly what it was, unless the Dictionary was edited since (then only this lesson
+            // is taken back). Either way it isn't learned again.
+            if AppSettings.dictionary == dict {
+                AppSettings.dictionary = before
+            } else {
+                var d = AppSettings.dictionary
+                for x in added { d = d.minus(x.from) }
+                for x in before.entries where !dict.entries.contains(x) { d = d.plus(x) }
+                AppSettings.dictionary = d
+            }
+            AppSettings.unlearn(entries + added)
+            self?.mainModel.entries = AppSettings.dictionary.entries
+        }
+        mainModel.entries = dict.entries // the Dictionary tab shows it at once
+        // Through the meeting-notice path: it waits while a dictation has the flow bar.
+        meetingNotice(.init(text: "Added \(names) to Dictionary", action: "Undo", run: undo, seconds: 10))
+    }
+
+    // MARK: calls in other apps
+
+    /// Starts or stops the call detector to match Settings › Meetings.
+    func applyCallDetection() {
+        let mode = UserDefaults.standard.string(forKey: Key.meetingCallDetection) ?? "ask"
+        if mode == "off" {
+            calls.stop()
+            missedCall = nil
+            if callOffer != nil { withdrawCallOffer() }
+        } else {
+            calls.start()
+        }
+    }
+
+    private func callEvent(_ event: CallWatch.Event) {
+        let mode = UserDefaults.standard.string(forKey: Key.meetingCallDetection) ?? "ask"
+        guard mode != "off" else { return }
+        Diagnostics.log("call: \(event), mode \(mode), meeting \(meetings.phase)")
+        switch event {
+        case .started(let app):
+            guard meetings.phase == .idle else {
+                if meetings.phase == .finishing { missedCall = app }
+                // Started by hand as the call began (within a minute), in a call app: it ends with the call.
+                // Not an older recording, and not a browser (voice search, an AI voice chat).
+                if meetings.isRecording, !app.isBrowser, meetings.elapsed <= 60 { meetings.adoptCall() }
+                return
+            }
+            // A browser holding the mic may be voice typing or an AI voice chat: always ask.
+            offerCall(app, autoStart: mode == "auto" && !app.isBrowser)
+        case .ended(let app):
+            if missedCall == app { missedCall = nil }
+            if callOffer?.app == app { withdrawCallOffer() }
+            guard meetings.isRecording else { return }
+            // A recording of this call stops by itself, once the others have also gone quiet (an app
+            // that releases the mic on mute isn't a hang-up). A browser "call" or a recording started
+            // for something else asks.
+            if meetings.startedForCall, !app.isBrowser {
+                stopWhenCallIsOver(app, checks: 0)
+            } else {
+                meetingNotice(.init(text: "Call in \(app.name) ended. Stop recording?", action: "Stop",
+                                    run: { [weak self] in self?.meetings.stop() }, seconds: Self.callCardSeconds))
+            }
+        }
+    }
+
+    /// How long the call card stays on screen (not counting time under the mouse or behind a dictation).
+    static let callCardSeconds: TimeInterval = 20
+    /// "Record automatically": the countdown on the card before recording starts.
+    static let callAutoStartSeconds: TimeInterval = 10
+
+    /// Shows the call card: Record or dismiss, or a countdown to recording. It waits while a
+    /// dictation has the flow bar and comes back after it; afterwards the menu bar menu still offers
+    /// "Record …" until the call ends.
+    private func offerCall(_ app: CallApps.App, autoStart: Bool) {
+        callOffer = (app, autoStart ? Self.callAutoStartSeconds : Self.callCardSeconds, autoStart)
+        flowBar.model.onCallRecord = { [weak self] in self?.recordCall() }
+        flowBar.model.onCallDismiss = { [weak self] in
+            Diagnostics.log("call: card dismissed")
+            self?.withdrawCallOffer()
+        }
+        refreshCallCard()
+        callTimer?.invalidate()
+        let t = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in self?.callTick(0.25) }
+        RunLoop.main.add(t, forMode: .common)
+        callTimer = t
+    }
+
+    private func callTick(_ step: TimeInterval) {
+        guard var offer = callOffer else { return }
+        guard flowBar.model.phase == .call, !flowBar.model.callHover else { return }
+        offer.left -= step
+        callOffer = offer
+        guard offer.left <= 0 else { return refreshCallCard() }
+        if offer.autoStart { recordCall() } else { withdrawCallOffer() }
+    }
+
+    private func refreshCallCard() {
+        guard let o = callOffer else { return flowBar.setCall(nil) }
+        let n = Int(o.left.rounded(.up))
+        let text = o.autoStart ? "Recording \(o.app.meetingTitle) in \(n) s"
+            : o.app.isBrowser ? "Call started in \(o.app.name)" : "\(o.app.meetingTitle) started"
+        flowBar.setCall(.init(text: text, countdown: o.autoStart ? n : nil))
+    }
+
+    /// Records the call on offer, or the one going on (menu bar menu).
+    private func recordCall() {
+        guard let app = callOffer?.app ?? calls.activeCall else { return }
+        withdrawCallOffer()
+        meetings.start(title: app.meetingTitle, forCall: true)
+    }
+
+    private func withdrawCallOffer() {
+        callOffer = nil
+        callTimer?.invalidate()
+        callTimer = nil
+        flowBar.setCall(nil)
+        showNextNotice()
+    }
+
+    /// The meeting shortcut and menu item. Started during a call, the recording is that call's: it
+    /// gets its name and stops when the call ends.
+    func toggleMeetingRecording() {
+        if meetings.phase == .idle, let app = calls.activeCall, !app.isBrowser {
+            withdrawCallOffer()
+            meetings.start(title: app.meetingTitle, forCall: true)
+        } else {
+            meetings.toggle()
+        }
+    }
+
+    /// Auto-recorded call over: stop once the others have also been quiet for 20 s (people say
+    /// goodbye after hanging up the mic in some apps). Checks every 10 s for up to 3 minutes; a
+    /// call that comes back, or a manual stop, ends the checking.
+    private func stopWhenCallIsOver(_ app: CallApps.App, checks: Int) {
+        guard meetings.isRecording, meetings.startedForCall, calls.activeCall == nil else { return }
+        let quiet = meetings.secondsSinceOthersHeard
+        // Never heard the others (no system audio): can't tell the call is over, so ask.
+        if quiet.isFinite, quiet > 20 { meetings.stop(.callEnded); return }
+        guard checks < 18, quiet.isFinite else {
+            meetingNotice(.init(text: "Call in \(app.name) ended. Stop recording?", action: "Stop",
+                                run: { [weak self] in self?.meetings.stop() }, seconds: Self.callCardSeconds))
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in self?.stopWhenCallIsOver(app, checks: checks + 1) }
+    }
+
+    /// The Meetings tab, opened on one meeting.
+    func showMeeting(_ id: String) {
+        mainModel.openMeeting = id
+        mainModel.meetingTitleDraft = meetingStore.entry(id)?.info.title ?? ""
+        mainModel.meetingFind = ""
+        showMainWindow(.meetings)
+    }
+
+    // MARK: notifications
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        if let id = response.notification.request.content.userInfo["meeting"] as? String, !id.isEmpty {
+            DispatchQueue.main.async { self.showMeeting(id) }
+        }
+        completionHandler()
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list])
     }
 
     private func deliver(_ text: String, appName: String?) {
         lastText = text
         lastApp = appName
+        let learn = UserDefaults.standard.bool(forKey: Key.learnCorrections)
+        // Not VoiceType's own fields (a Scratchpad note): the watch reads them from a background queue.
+        let field = learn ? Inserter.focusedField().flatMap { f -> Inserter.Field? in
+            var pid: pid_t = 0
+            return AXUIElementGetPid(f.element, &pid) == .success && pid == ProcessInfo.processInfo.processIdentifier ? nil : f
+        } : nil
+        if field == nil {
+            corrections.finish() // the last dictation's edits are judged now (a watched one: in `watch`)
+            if learn { Diagnostics.log("corrections: no readable text field in \(appName ?? "?"): \(Inserter.lastMiss)") }
+        }
         switch Inserter.insert(text) {
         case .pasted:
-            break
+            if let field {
+                corrections.watch(field, typed: text) { [weak self] learned in self?.learned(learned) }
+            }
         case .copiedOnly:
-            flowBar.notice("Copied – press ⌘V", action: "Fix") { [weak self] in self?.showOnboarding(at: .typing) }
+            // No Accessibility (a fresh or re-signed build loses it): say why it didn't paste.
+            flowBar.notice("Copied, not pasted: allow Accessibility", action: "Fix") { [weak self] in self?.showOnboarding(at: .typing) }
         }
     }
 
@@ -179,8 +600,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             handsFree.keyEquivalentModifierMask = [.shift, .option]
         }
         menu.addItem(handsFree)
+        // A call going on and nothing recording: the call card's offer stays here for the whole call.
+        if meetings.phase == .idle, let call = calls.activeCall {
+            menu.addItem(item("Record \(call.meetingTitle)", #selector(menuRecordCall)))
+        }
+        let meeting: NSMenuItem
+        switch meetings.phase {
+        case .idle: meeting = item("Start meeting recording", #selector(toggleMeeting))
+        case .recording: meeting = item("Stop meeting recording (\(FlowBarView.clock(meetings.elapsed)))", #selector(toggleMeeting))
+        case .finishing:
+            meeting = NSMenuItem(title: "Transcribing the meeting…", action: nil, keyEquivalent: "")
+            meeting.isEnabled = false
+        }
+        if meetings.phase != .finishing, KeyMonitor.meetingShortcutOn { // a hint; the shortcut works everywhere
+            meeting.keyEquivalent = "r"
+            meeting.keyEquivalentModifierMask = [.control, .option]
+        }
+        menu.addItem(meeting)
+        let sounds = item("Play start/stop sounds", #selector(toggleSounds))
+        sounds.state = UserDefaults.standard.bool(forKey: Key.sounds) ? .on : .off
+        menu.addItem(sounds)
         menu.addItem(item(keys.isPaused ? "Resume \(TriggerKey.current.title)" : "Pause \(TriggerKey.current.title) for 1 hour", #selector(togglePause)))
         menu.addItem(.separator())
+        menu.addItem(item("New Scratchpad note", #selector(newScratchpadNote)))
+        menu.addItem(item("Meetings…", #selector(openMeetings)))
         menu.addItem(item("Open VoiceType…", #selector(openMain), key: ","))
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
@@ -276,6 +719,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dictation.warmUp()
     }
 
+    @objc private func toggleSounds() {
+        UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: Key.sounds), forKey: Key.sounds)
+    }
+
     @objc private func toggleTranslate() {
         UserDefaults.standard.set(!UserDefaults.standard.bool(forKey: Key.translate), forKey: Key.translate)
         dictation.warmUp()
@@ -289,15 +736,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func openMain() { showMainWindow() }
 
+    @objc private func openSettings() { showSettings() }
+
+    @objc private func openMeetings() { showMainWindow(.meetings) }
+
+    @objc private func newScratchpadNote() {
+        showMainWindow(.scratchpad)
+        scratchpad.newNote()
+    }
+
+    @objc private func toggleMeeting() { toggleMeetingRecording() }
+
+    @objc private func menuRecordCall() { recordCall() }
+
     @objc func togglePause() {
         keys.pausedUntil = keys.isPaused ? nil : Date().addingTimeInterval(3600)
     }
 
-    private func setIcon(listening: Bool) {
-        let img = NSImage(systemSymbolName: listening ? "mic.fill" : "mic", accessibilityDescription: "VoiceType")
+    /// Red mic while dictating, a red record symbol while a meeting records.
+    private func refreshIcon() {
+        let listening = dictation.state == .listening
+        let meeting = meetings.phase == .recording
+        let img = NSImage(systemSymbolName: listening ? "mic.fill" : meeting ? "record.circle" : "mic", accessibilityDescription: "VoiceType")
         img?.isTemplate = true
         statusItem.button?.image = img
-        statusItem.button?.contentTintColor = listening ? .systemRed : nil
+        statusItem.button?.contentTintColor = listening || meeting ? .systemRed : nil
     }
 
     // MARK: windows
@@ -312,6 +775,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     var isPaused: Bool { keys.isPaused }
+
+    /// Brings `w` up on the Space you're looking at, including over a full-screen app, instead of
+    /// switching back to the desktop the window was first opened on (or, with "switch to a Space with
+    /// open windows" off, opening it out of sight there). Its green button still gives it a full-screen
+    /// Space of its own (`.fullScreenAuxiliary` would stop that).
+    private func showOnCurrentSpace(_ w: NSWindow) {
+        w.collectionBehavior.insert([.moveToActiveSpace, .fullScreenPrimary])
+        w.sharingType = captureHidden ? .none : .readOnly
+        NSApp.activate(ignoringOtherApps: true)
+        w.makeKeyAndOrderFront(nil)
+    }
 
     /// Home, History, Dictionary and Styles, with the tabs in the toolbar.
     func showMainWindow(_ section: MainModel.Section? = nil) {
@@ -330,8 +804,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         mainToolbar.sync()
         mainModel.refresh += 1
-        NSApp.activate(ignoringOtherApps: true)
-        mainWindow?.makeKeyAndOrderFront(nil)
+        mainWindow.map(showOnCurrentSpace)
     }
 
     func showSettings() {
@@ -347,8 +820,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             settingsWindow = w
         }
         mainModel.refresh += 1
-        NSApp.activate(ignoringOtherApps: true)
-        settingsWindow?.makeKeyAndOrderFront(nil)
+        settingsWindow.map(showOnCurrentSpace)
     }
 
     /// Opens setup at `step`; without one, after setup was finished, at the first thing still missing
@@ -371,8 +843,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             onboardingWindow = w
         }
         onboardingModel.refresh += 1
-        NSApp.activate(ignoringOtherApps: true)
-        onboardingWindow?.makeKeyAndOrderFront(nil)
+        onboardingWindow.map(showOnCurrentSpace)
     }
 
     /// Third-party notices shipped in the app bundle (Contents/Resources/THIRD_PARTY_NOTICES.txt).
@@ -395,8 +866,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             w.center()
             licensesWindow = w
         }
-        NSApp.activate(ignoringOtherApps: true)
-        licensesWindow?.makeKeyAndOrderFront(nil)
+        licensesWindow.map(showOnCurrentSpace)
     }
 
     func finishOnboarding() {

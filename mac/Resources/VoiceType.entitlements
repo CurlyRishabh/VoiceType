@@ -15,5 +15,12 @@
     <array>
         <string>/Library/Application Support/VoiceType/</string>
     </array>
+    <!-- Accessibility (already needed to paste) also reads the text field you dictated into, to
+         learn your spelling fixes and to know if a sentence is already started. Inside the sandbox
+         that needs the per-app Accessibility server's name; it opens no network or file access. -->
+    <key>com.apple.security.temporary-exception.mach-lookup.local-name</key>
+    <array>
+        <string>com.apple.axserver</string>
+    </array>
 </dict>
 </plist>

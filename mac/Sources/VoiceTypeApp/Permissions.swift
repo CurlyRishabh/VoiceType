@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import VoiceTypeCore
 
 /// Asks for macOS permissions so that the user only has to flip a switch.
 ///
@@ -63,4 +64,25 @@ enum Permissions {
         }
         done()
     }
+}
+
+/// "System Audio Recording", for the other side of a meeting. macOS has no public API to check it
+/// or ask for it up front: it asks the first time a meeting starts its audio tap, and when it is
+/// denied the tap just delivers silence. So the status is what the last meeting heard.
+enum SystemAudioPermission {
+    static var lastState: MeetingInfo.SystemAudio {
+        MeetingInfo.SystemAudio(rawValue: UserDefaults.standard.string(forKey: Key.systemAudioState) ?? "") ?? .unknown
+    }
+
+    static var statusText: String {
+        switch lastState {
+        case .ok: return "Working in your last meeting"
+        case .silent: return "Silent in your last meeting: switch VoiceType on in System Settings"
+        case .unavailable: return "Couldn’t be captured in your last meeting"
+        case .unknown: return "macOS asks the first time you record a meeting"
+        }
+    }
+
+    /// Privacy & Security → Screen & System Audio Recording (VoiceType is under "System Audio Recording Only").
+    static func openSettings() { openPrivacy("Privacy_ScreenCapture") }
 }

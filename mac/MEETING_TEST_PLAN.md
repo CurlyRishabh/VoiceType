@@ -1,0 +1,248 @@
+# Meeting transcription: test plan
+
+## Covered automatically
+
+* `swift test`: the pure parts in VoiceTypeCore (`Tests/VoiceTypeCoreTests/MeetingTests.swift`):
+  line merging, timestamps, echo de-dup, per-chunk hallucination filter, meeting-safe clean-up,
+  transcript.md / transcript.json / meeting.json, folder names, WAV writer/reader and crash repair,
+  channel alignment, live chunking (checked equal to `AudioChunker.plan` on random segments),
+  silence watch, downmix and tap-buffer selection, length and disk guards.
+* `scripts/test-meeting.sh`: the whole pipeline headless (`VoiceType --meeting`) on a synthetic
+  call made with macOS voices: two channels, pauses, crosstalk, a Hindi line, echo of the others in
+  the mic, and three different voices on the others' side. Checks speakers, words, Hinglish output,
+  echo removal, timestamp order and clock, the three files, that the three other voices are told
+  apart (Speaker 1/2/3, each line right), and prints decode time / RTF.
+* `scripts/test-audio.sh`: dictation is unchanged (language per call did not change its output).
+* `scripts/test-corrections.sh`: learning from corrections on real text fields through the app's
+  own code (`VoiceType --corrections`): pastes "Let's send this draft to Shashi" into TextEdit, a
+  Chrome textarea and three Electron chat boxes like Slack's and T3 Code's (one bare line; an empty
+  box, which reads as a line break; text on a line above, where Chromium's cursor is one short per
+  line break), fixes it to "Sasi", then leaves the field or presses Return right away. Expects
+  `Shashi→Sasi` in all five. (Needs Accessibility for the terminal;
+  `ELECTRON=…/Electron.app/Contents/MacOS/Electron` for the Electron cases. It takes over the
+  keyboard: run it with nothing else open in front.)
+
+## Manual test plan
+
+Needs the signed app and real meeting apps. Start with `scripts/reinstall-local.sh`: it builds,
+clears every macOS permission VoiceType had (entries from differently signed builds still look
+"on" in System Settings but don't apply), installs to `~/Applications` and opens setup, where each
+step now says in green or orange whether its permission really is on. Builds signed with the local
+"VoiceType Local" identity keep their permissions across rebuilds; ad-hoc builds don't. Where a step says "check the folder", that is
+`~/Library/Application Support/VoiceType/Meetings/<date time title>/`.
+
+### 1. Permissions and first run
+1. Fresh permissions: press **⌃⌥R**. Expect the one-time "Before you record a meeting" alert;
+   *Cancel* does nothing, *Start recording* starts. It never shows again.
+2. Expect macOS's **System Audio Recording** prompt (wording from `NSAudioCaptureUsageDescription`)
+   and, once, the notification permission prompt. Allow both.
+3. **The main go/no-go:** play a YouTube video or join a call. The flow bar meter turns teal when
+   the other side talks, and after Stop the transcript has **Others** lines. This proves the process
+   tap and private aggregate device work inside the App Sandbox with the unchanged entitlements.
+4. Deny System Audio Recording (or switch it off in Privacy & Security → Screen & System Audio
+   Recording), record again while audio plays: after ~8 s the notice "Recording your mic only…"
+   with *Turn on* (opens that pane); the pill shows a crossed-out speaker; the Meetings tab card
+   shows the orange banner; transcript.md has the "only Me was transcribed" note; Settings →
+   Meetings → System audio says "Silent in your last meeting".
+5. With the mic denied: *Start recording* says "Microphone is blocked for VoiceType" and records nothing.
+
+### 2. Real calls
+For each of Zoom, Google Meet (Chrome and Safari), Microsoft Teams, a Slack huddle, FaceTime:
+1. Record 3–5 minutes with headphones. Others' lines are the other people; Me lines are yours;
+   timestamps match the call (spot-check two lines against a clock).
+2. Repeat on the laptop speakers (no headphones). Few or no of the others' sentences appear as Me
+   (echo de-dup). Turn *Remove echo when not using headphones* off and compare: the echoes appear.
+3. Talk over each other for a few seconds: both sides' words are kept.
+   Mirror greetings with headphones on ("Good morning." – "Good morning.", "Bye." – "Bye."): both
+   sides stay in the transcript.
+4. One Hindi/Hinglish meeting with Language = Both: Hindi lines come out in Latin (or Devanagari
+   if chosen); English stays English.
+
+### 3. Dictation during a meeting (two consumers of the mic)
+1. While a meeting records, hold **fn** and dictate into Notes. Dictation works normally (listening
+   pill, text typed), then the flow bar returns to the meeting pill.
+2. Hands-free dictation (double-tap fn) for ~30 s during the meeting: works; the meeting keeps
+   recording (timer keeps going, transcript has no gap; the dictated words also appear as Me —
+   expected, it's your voice).
+3. Dictation feels as fast as without a meeting (it waits for at most one meeting chunk).
+4. If dictation fails to start during a meeting on some device ("Microphone error"), note the mic
+   model: that device does not allow the meeting's IOProc and dictation's engine at once.
+5. Dictation sounds clean during a meeting (no clicks or dropouts in its recording: Settings →
+   Advanced → Keep recordings), so the meeting's IO thread isn't starving the device.
+
+### 4. Devices
+Watch Console (process VoiceType, search "VoiceType meeting") during these: every capture reopen is
+logged with what changed (default input/output, sample rate, stream layout, device gone, no audio).
+More than a few reopens in a quiet minute means a loop: note the reason line.
+
+0. Record for a minute with nothing playing and the mic idle: no "No audio from …" notice, no
+   reopen lines (silence still arrives as buffers).
+1. Connect AirPods mid-meeting (they become input and output): notice "Recording from AirPods…",
+   both channels continue; after Stop, timestamps after the switch are still in step with the call.
+2. Unplug a USB/3.5 mm headset mid-meeting: same.
+3. Switch the output device in Control Centre while the other side talks: Others continues.
+4. AirPods as input and output while music plays: they switch to the headset profile (lower
+   sample rate). Others must not play back fast or slow in the kept WAV (turn *Keep audio* on), and
+   the transcript must not have stretches of silence-induced gaps.
+5. On a Mac whose only mic is a USB headset: unplug it mid-meeting → "No audio from the microphone:
+   reconnecting…" within ~5 s; plug it back → "Microphone is back"; Me continues in the transcript.
+6. A Multi-Output Device as the default output: Others is still captured (tap-only fallback).
+
+### 5. Stop paths and recovery
+1. Stop via ⌃⌥R, the flow bar ■, the menu bar item (shows the elapsed time), and the Meetings tab:
+   each shows "Wrapping up…" with a spinner for a few seconds, then "Transcript ready · Open" and a
+   macOS notification; both open the meeting.
+2. Close the lid (or Apple menu → Sleep) mid-meeting: after wake, "Transcript ready: stopped when
+   your Mac went to sleep".
+3. Quit from the menu bar mid-meeting: the app stays up for the "Wrapping up…" (at most 15 s),
+   then quits with the meeting Ready. Quit again right after a long meeting's Stop: same.
+   If it had to quit before the transcript was done, the next launch shows "Transcribed an
+   interrupted meeting".
+4. `kill -9` the app mid-meeting, relaunch: same as 3 (meeting.json stop reason `crash`).
+5. Length limit: `defaults write dev.offline.voicetype.mac meeting_max_minutes -int 6`, record:
+   warning at 1:00 (flow bar + notification), automatic stop and save at 6:00. Then
+   `defaults delete dev.offline.voicetype.mac meeting_max_minutes`.
+6. Start and stop within a few seconds without talking: "Started by mistake? Only N words" with
+   *Discard*; Discard removes the meeting, ignoring it keeps it.
+7. Low disk (only if a nearly full volume is at hand): warning under an hour left, stop when nearly full.
+8. Start with ⌃⌥R on a fresh install and press ⌃⌥R again while the consent alert is open: only one
+   meeting starts.
+9. Partial transcript: hard to cause by hand (a whisper.cpp decode error, or a model that can't be
+   reloaded after a critical memory-pressure release, each retried once). Whenever a meeting ends
+   "Partial", check that the detail view says how many parts failed and that the WAVs are kept.
+
+### 6. Flow bar and screen sharing
+1. Pill: pulsing red dot, white/teal meter, timer (h:mm:ss past an hour), ■. Hover: widens to show
+   the title and word count. Rename the meeting while recording: the hover shows the new title.
+2. With *Hide from screen sharing while recording* on (default), share the screen in Zoom/Meet and
+   take a ⌘⇧5 screen recording: the pill and the VoiceType window are not in them. Off: they are.
+   Toggle it during a recording: it takes effect at once. If a meeting app still shows the windows
+   (newer capture APIs may ignore the request), note which app.
+3. Notices that arrive while you dictate wait until the dictation is done.
+
+### 7. Meetings tab
+1. List: title, "Today at …", length, words, status chip (Recording with a live timer while
+   recording, Transcribing, Ready, Failed). Search finds a word from inside a transcript.
+2. While recording, type in the search box and press Return: the recording keeps going. Rename
+   the meeting during "Wrapping up…": the finished meeting (and its folder) has the new title.
+3. Detail: rename (Return) renames meeting.json, transcript.md's title and the folder; find shows
+   "n of m" and next/previous scroll to the line; Copy transcript / Copy for AI paste correctly
+   into Claude or Codex; Show in Finder selects transcript.md; Delete asks, then removes the folder.
+4. *Keep audio after transcription* off: the folder has no WAVs after Ready. On: mic.wav and
+   system.wav stay and play in QuickTime, in sync with each other.
+5. An interrupted meeting that couldn't be recovered (no model) can be deleted.
+
+### 8. Long meeting
+Record a real 60–90 minute meeting: memory stays flat in Activity Monitor (no growth with length),
+dictation stays responsive, the transcript is ready seconds after Stop, and meeting.json's `rtf`
+and `tailSeconds` are recorded (also in Settings → Advanced → Debug as "meeting · …").
+
+### 9. Shortcut
+1. Settings → Meetings → shortcut off: ⌃⌥R does nothing; on again: works.
+2. With VoiceOver on, ⌃⌥ is VoiceOver's modifier: check whether ⌃⌥R still reaches VoiceType.
+
+### 10. Setup screens and paste
+1. After `reinstall-local.sh`: each setup step shows an orange "…is off" line until its permission
+   is granted, then green. The Models step says "Speech model already installed" (no Download)
+   when the model is there.
+2. Dictate into TextEdit, Slack, Chrome and Notes: the text is pasted, not just copied. If it is
+   only copied, the notice says "Copied, not pasted: allow Accessibility"; check
+   `~/Library/Application Support/VoiceType/diagnostics.log` (permission state at launch and each
+   paste's outcome; no dictated text).
+3. Menu bar → *Play start/stop sounds* toggles the purr/pop (same as Settings › Dictation).
+
+### 11. Live transcript and notes
+1. While recording, click the flow-bar pill (not Stop) or *Live transcript* on the Meetings card:
+   the meeting opens with lines appearing a few seconds after each sentence; *Follow* keeps the
+   newest line in view, also during a long monologue.
+2. Type a note and press Return: it appears as an orange **Note** line at that moment. Type a
+   note and stop the meeting without pressing Return: it is still saved.
+3. After the meeting: notes are in transcript.md as `📝 **My note:**` lines and in *Copy for AI*;
+   a note added on a finished meeting goes at its end.
+
+### 12. Call detection (Settings › Meetings › When a call starts)
+1. *Ask me*: join a Zoom/Teams/Slack huddle/FaceTime call. After ~6 s with the mic in use the flow
+   bar shows a card "Slack huddle started" with *Record* and ×. *Record* starts a meeting named
+   "Slack huddle" etc. A quick voice message (under 6 s) asks nothing.
+2. The card stays 20 s; with the mouse on it, it stays until the mouse leaves. Dictate while it
+   shows: it gives way to the dictation and comes back afterwards. × (or the 20 s) closes it, but
+   the menu bar menu keeps *Record Slack huddle* until the call ends.
+3. Google Meet in Chrome/Safari: "Call started in Chrome", always asks, even in automatic mode.
+4. *Record automatically (10 s to cancel)*: a native call app shows "Recording Zoom call in 10 s"
+   counting down, with *Record now* and × (cancel). At 0 it records.
+5. A recording of the call (from the card, the menu, or the shortcut / Start recording pressed
+   during the call) stops by itself ~20 s after hanging up, once the others are quiet too:
+   "Transcript ready: the call ended". A meeting started before any call asks "Stop recording?".
+6. Without a real call: launch with `open -n ~/Applications/VoiceType.app --env
+   VOICETYPE_TEST_CALL="com.tinyspeck.slackmacgap 4 60"` (that app "uses the mic" from 4 s to 60 s).
+7. A second call that starts while the first is still "Wrapping up…" is offered once it finishes.
+8. *Do nothing*: no prompts.
+
+### 13. Audio retention, Delete audio, Re-transcribe
+1. Default keeps audio 7 days: a new meeting folder keeps mic.wav/system.wav; the detail view shows
+   *Re-transcribe* and *Delete audio*.
+2. *Re-transcribe → Hindi* (or English + Hindi): status goes to Transcribing, then "Transcribed
+   again"; notes survive. Renaming during it: the folder follows afterwards.
+3. Make the model unavailable (rename the .bin) and re-transcribe: "Re-transcribing failed: the
+   previous transcript is kept", and it is.
+4. *Delete audio*: the WAVs go, the transcript stays, the buttons disappear.
+5. Set "1 day" and move an old meeting's `endedAt` back two days in meeting.json: its audio is
+   gone within the hour (or at the next launch). Partial/failed meetings keep audio at least 7 days.
+
+### 14. Learning from corrections (Settings › Dictation › Learn from my corrections)
+1. Dictate a sentence with a name it gets wrong ("Rishab"), fix the spelling in the field, then
+   click elsewhere or send it (Return in Slack / T3 / a browser chat box): "Added “Rishabh” to
+   Dictionary" with *Undo*, and the Dictionary tab shows it at once. Undo removes it. Check in
+   TextEdit, Notes, Slack, a browser and T3 Code (Electron apps used to learn nothing).
+2. Two dictations into the same chat box, then fix a word in the first one: still learned. Also
+   with text already on a line above (type "Hi.", Shift+Return, then dictate).
+3. Fix a word the Dictionary itself typed (a learned "Kritnat" fixed to "Kritant"): the entry
+   changes ("Kreta nt → Kritant"), no second one. Undo, or deleting an entry in the Dictionary tab,
+   means the same fix isn't learned again.
+4. Rewriting a word into a different one ("report" → "invoice"), adding or deleting words, a
+   word half retyped ("Rishab" → "Rish"), or editing text before the dictation adds nothing.
+5. Password fields and apps that don't expose their text are never read. `diagnostics.log` says
+   why a field couldn't be read ("corrections: no readable text field in … : …").
+
+### 15. Telling the other speakers apart (Settings › Meetings › Tell the other speakers apart)
+1. A call with two or more other people: right after Stop the transcript shows **Others**; a few
+   seconds later (about 5 s per minute of their speech) the detail view says "Telling the other
+   speakers apart…", then the lines become **Speaker 1**, **Speaker 2**… in their own colours, and
+   "N other speakers told apart by voice". transcript.md lists them under **Speakers**.
+2. Right-click a speaker's name → *Rename Speaker 2…* → "Priya": every line, transcript.md and
+   *Copy for AI* use the name; an empty name puts "Speaker 2" back.
+3. A call with one other person stays **Others** (no numbering).
+4. With "Keep meeting audio: Delete right away", the audio is still deleted once speakers are done.
+5. An older meeting with audio and no speakers: *Find speakers* runs it.
+6. Turn the setting off: meetings stay **Others**.
+
+### 16. Hands-free by double-tap
+1. Default settings: double-tap the dictation key (Right ⌥ here) → hands-free; tap once more to
+   finish. ⇧⌥ Space does nothing unless turned on in Settings › Dictation.
+2. Holding the key still works as push-to-talk.
+
+### 17. Opening VoiceType and full-screen apps
+1. With VoiceType running, open it again from Spotlight, Finder or Launchpad: its window comes up
+   (before setup is finished: setup).
+2. With another app full screen (T3 Code, Chrome), open VoiceType from the menu bar or Spotlight:
+   the window appears over that app, without switching to the desktop.
+3. The window's green button gives VoiceType its own full-screen Space; the green button again
+   brings it back.
+4. Start a meeting on the desktop, switch to a full-screen app: the recording pill follows.
+5. In the Dictionary's fields, ⌘C / ⌘V / ⌘Z work; ⌘W closes the window, ⌘, opens Settings.
+6. Open a second copy of VoiceType (say a fresh build): "VoiceType is already running" in front,
+   and it quits; dictation types once.
+
+### 18. Snippets, Scratchpad, names on screen, History
+1. Snippets tab: "insert date" and "insert time" are there. Dictate "insert date" alone: only the
+   date is typed ("25 November 2026"), no full stop. "Here is my email, thanks" with a "my email"
+   snippet: the address replaces the cue. "my emails" isn't a cue. Add from an example chip, edit
+   (pencil) and delete work; the same cue twice replaces the old one.
+2. Scratchpad: menu bar → *New Scratchpad note* opens the tab with the cursor in a new note;
+   dictate into it; quit and reopen: the note is there. Empty notes aren't kept. Search filters.
+3. Names on screen: in a Slack DM with someone whose name Whisper gets wrong, dictate their name:
+   spelled as on screen. diagnostics.log says "screen names: N from M texts in X ms" (never the
+   names). Turning off Settings → Dictation → *Spell names on screen right* stops it.
+4. History: replace history.json in the app's container with broken JSON and relaunch: History is
+   empty, the broken file is kept as history-unreadable-<time>.json, and new dictations are saved.
+

@@ -16,13 +16,26 @@ enum Key {
     static let hotkey = "hotkey"                // index into HotKey.presets
     static let history = "history_enabled", keepRecordings = "keep_recordings"
     static let dictionary = "dictionary"
+    static let snippets = "snippets"            // JSON [Snippet]; absent = the starter ones
+    static let unlearned = "unlearned_fixes"     // learned fixes you undid or deleted: never learned again
     static let showHUD = "show_hud"
     static let sounds = "sounds_enabled"         // start/stop cues
     static let trigger = "trigger"              // fn | right_option | option_space
-    static let handsFreeShortcut = "hands_free_shortcut" // ⇧⌥ Space toggles hands-free
+    static let handsFreeShortcut = "hands_free_shortcut" // ⇧⌥ Space toggles hands-free (off by default: double-tap the key)
     static let flowBarIdle = "flow_bar_idle"    // show the idle sliver (off unless turned on in Advanced)
     static let onboardingDone = "onboarding_done"
     static let onboardingStep = "onboarding_step"  // resume setup after macOS "Quit & Reopen"
+    static let meetingShortcut = "meeting_shortcut"          // ⌃⌥R starts and stops a meeting recording
+    static let meetingMaxMinutes = "meeting_max_minutes"     // 30 | 60 | 120 | 180
+    static let meetingAudioDays = "meeting_audio_days"       // AudioRetention: 0 delete now, N days, -1 keep
+    static let meetingCallDetection = "meeting_call_detection" // off | ask | auto
+    static let meetingSpeakers = "meeting_speakers"           // tell the other people on a call apart by voice
+    static let learnCorrections = "learn_corrections"         // add words you fix after dictating to the Dictionary
+    static let screenNames = "screen_names"                   // names on screen as spelling hints for the speech model
+    static let meetingHideFromCapture = "meeting_hide_from_capture" // flow bar + windows hidden from screen sharing while recording
+    static let meetingEchoFilter = "meeting_echo_filter"     // drop my mic's echo of the others (no headphones)
+    static let meetingConsentShown = "meeting_consent_shown"
+    static let systemAudioState = "system_audio_state"       // what the last meeting's system audio did: ok | silent | unavailable
     static func style(_ c: AppCategory) -> String { "style_\(c.rawValue)" }
 }
 
@@ -35,7 +48,9 @@ enum AppSettings {
             Key.silenceMs: 1500, Key.fillers: true, Key.corrections: true, Key.commands: true,
             Key.capitalize: true, Key.finalPunct: true, Key.polish: true, Key.polishStyle: "casual",
             Key.hotkey: 0, Key.history: true, Key.keepRecordings: false, Key.showHUD: true,
-            Key.trigger: "fn", Key.flowBarIdle: false, Key.handsFreeShortcut: true, Key.sounds: true, Key.onboardingDone: false,
+            Key.trigger: "fn", Key.flowBarIdle: false, Key.handsFreeShortcut: false, Key.sounds: true, Key.onboardingDone: false,
+            Key.meetingShortcut: true, Key.meetingMaxMinutes: MeetingLimit.defaultMinutes, Key.meetingCallDetection: "ask", Key.learnCorrections: true, Key.screenNames: true, Key.meetingSpeakers: true,
+            Key.meetingHideFromCapture: true, Key.meetingEchoFilter: true, Key.meetingConsentShown: false,
             Key.style(.messages): StyleChoice.casual.rawValue, Key.style(.email): StyleChoice.formal.rawValue,
             Key.style(.notes): StyleChoice.notes.rawValue, Key.style(.other): StyleChoice.off.rawValue,
         ])
@@ -74,10 +89,52 @@ enum AppSettings {
         return s
     }
 
+    /// The engine for meetings: Whisper (whisper.cpp when imported) in the language setting. Never
+    /// "Translate to English": a meeting is transcribed as spoken. Only Moonshine imported: English
+    /// meetings with chunk-level times. nil when no model can do it.
+    /// `language`: "en", "hi" or "auto"; nil = the language setting.
+    static func meetingSpec(_ models: ModelStore, language: String? = nil) -> EngineSpec? {
+        let language = language ?? d.string(forKey: Key.language) ?? "en"
+        if models.isReady(.whisper) { return EngineSpec(kind: .hindiEnglish, language: language == "auto" ? "" : language) }
+        if language == "en", models.isReady(.moonshine) { return EngineSpec(kind: .fastEnglish, language: "en") }
+        return nil
+    }
+
+    /// Days meeting audio is kept (AudioRetention).
+    static var meetingAudioDays: Int { d.object(forKey: Key.meetingAudioDays) as? Int ?? AudioRetention.defaultDays }
+
+    static var meetingKeepsAudio: Bool { AudioRetention.keeps(meetingAudioDays) }
+
     static var dictionary: PersonalDictionary {
         get { PersonalDictionary.parse(d.string(forKey: Key.dictionary)) }
         set { d.set(newValue.serialize(), forKey: Key.dictionary) }
     }
+
+    /// Spoken cues and the text they type. Until you change them: the starter ones (date, time).
+    static var snippets: [Snippet] {
+        get {
+            guard let s = d.string(forKey: Key.snippets) else { return Snippet.defaults }
+            return (try? JSONDecoder().decode([Snippet].self, from: Data(s.utf8))) ?? Snippet.defaults
+        }
+        set {
+            let clean = SnippetSet(newValue).snippets
+            if let data = try? JSONEncoder().encode(clean) { d.set(String(decoding: data, as: UTF8.self), forKey: Key.snippets) }
+        }
+    }
+
+    /// Fixes learned from your edits that you then undid or deleted (like Wispr Flow, they aren't
+    /// learned again; adding one by hand still works). The latest 500.
+    static func isUnlearned(_ e: PersonalDictionary.Entry) -> Bool {
+        (d.stringArray(forKey: Key.unlearned) ?? []).contains(unlearnedKey(e))
+    }
+
+    static func unlearn(_ entries: [PersonalDictionary.Entry]) {
+        let keys = entries.map(unlearnedKey)
+        let kept = (d.stringArray(forKey: Key.unlearned) ?? []).filter { !keys.contains($0) }
+        d.set(Array((kept + keys).suffix(500)), forKey: Key.unlearned)
+    }
+
+    private static func unlearnedKey(_ e: PersonalDictionary.Entry) -> String { "\(e.from.lowercased())\t\(e.to.lowercased())" }
 
     /// `style` comes from the app being typed in (Styles screen); nil = instant rules only.
     static func cleanup(startsSentence: Bool, endsSentence: Bool, polishAvailable: Bool, style: PolishStyle?) -> CleanupSettings {
@@ -88,6 +145,7 @@ enum AppSettings {
         o.autoCapitalize = d.bool(forKey: Key.capitalize)
         o.addFinalPunctuation = d.bool(forKey: Key.finalPunct) && endsSentence
         o.dictionary = dictionary
+        o.snippets = SnippetSet(snippets)
         o.startsSentence = startsSentence
         var s = CleanupSettings()
         s.options = o
@@ -278,12 +336,54 @@ final class HistoryStore: ObservableObject {
     @Published private(set) var items: [Item] = []
     private let file: URL
     private let maxItems = 500
+    /// Saving failed (disk full…); told once until a save works again.
+    private var saveFailed = false
+    /// A history file that couldn't be read or set aside: never saved over this session.
+    private var readOnly = false
+    /// Saving History failed (the reason); shown to the user once.
+    var onSaveFailed: ((String) -> Void)?
 
     init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("VoiceType")
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         file = base.appendingPathComponent("history.json")
-        items = (try? JSONDecoder().decode([Item].self, from: Data(contentsOf: file))) ?? []
+        guard FileManager.default.fileExists(atPath: file.path) else { return }
+        // A damaged file used to load as empty and be saved over with the next dictation, losing it all.
+        guard let data = try? Data(contentsOf: file) else { setAside("couldn't be read"); return }
+        guard let (loaded, dropped) = SafeJSON.decodeArray(Item.self, from: data) else { setAside("isn't valid"); return }
+        items = loaded
+        if dropped > 0 {
+            keepCopy("\(dropped) unreadable entr\(dropped == 1 ? "y" : "ies") skipped")
+            if !readOnly { save() } // the readable entries, so the next launch doesn't copy it again
+        }
+    }
+
+    /// Moves an unreadable history file out of the way (kept next to it), so saving starts afresh.
+    private func setAside(_ why: String) {
+        let copy = damagedCopyURL()
+        do {
+            try FileManager.default.moveItem(at: file, to: copy)
+            Diagnostics.log("history: history.json \(why); moved to \(copy.lastPathComponent)")
+        } catch {
+            readOnly = true
+            Diagnostics.log("history: history.json \(why) and couldn't be moved (\(error.localizedDescription)); not saving over it")
+        }
+    }
+
+    /// Some entries were dropped: the original stays next to it before it's saved over.
+    private func keepCopy(_ why: String) {
+        let copy = damagedCopyURL()
+        if (try? FileManager.default.copyItem(at: file, to: copy)) != nil {
+            Diagnostics.log("history: \(why); original kept as \(copy.lastPathComponent)")
+        } else {
+            readOnly = true
+            Diagnostics.log("history: \(why) and the original couldn't be copied; not saving over it")
+        }
+    }
+
+    private func damagedCopyURL() -> URL {
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        return file.deletingLastPathComponent().appendingPathComponent("history-unreadable-\(stamp).json")
     }
 
     func add(_ item: Item) {
@@ -297,9 +397,22 @@ final class HistoryStore: ObservableObject {
     func clearAll() {
         items = []
         try? FileManager.default.removeItem(at: file)
+        if !FileManager.default.fileExists(atPath: file.path) { readOnly = false }
     }
 
     private func save() {
-        try? JSONEncoder().encode(items).write(to: file, options: [.atomic, .completeFileProtection])
+        guard !readOnly else {
+            if !saveFailed { saveFailed = true; onSaveFailed?("history.json can’t be replaced") }
+            return
+        }
+        do {
+            try JSONEncoder().encode(items).write(to: file, options: [.atomic, .completeFileProtection])
+            saveFailed = false
+        } catch {
+            Diagnostics.log("history: couldn't save (\(error.localizedDescription))")
+            guard !saveFailed else { return }
+            saveFailed = true
+            onSaveFailed?(error.localizedDescription)
+        }
     }
 }

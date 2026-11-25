@@ -52,7 +52,7 @@ You can also build both apps yourself from source (below) instead of downloading
 | App | What you get | How to build it | Docs |
 |---|---|---|---|
 | **Android** (`.apk`) | Voice keyboard + floating mic bubble that types into any app | `./gradlew assembleRelease` → `app/build/outputs/apk/release/app-release.apk` | This file, §1–§10 below |
-| **macOS** (`.dmg`) | Menu-bar app: press **⌥ Space**, speak, and the text is pasted into the focused app | `mac/scripts/build-dmg.sh` → `mac/build/VoiceType.dmg` | [`mac/README.md`](mac/README.md) |
+| **macOS** (`.dmg`) | Menu-bar app: press **⌥ Space**, speak, and the text is pasted into the focused app. Also records and transcribes meetings on the Mac (**⌃⌥R**: your mic is "Me", other apps' sound is "Others") | `mac/scripts/build-dmg.sh` → `mac/build/VoiceType.dmg` | [`mac/README.md`](mac/README.md) |
 
 The built `.apk` / `.dmg` files and the speech models aren't committed to git (they're large).
 Download them from the [Releases page](#download), or build the apps from source and fetch the
