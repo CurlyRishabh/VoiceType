@@ -16,13 +16,24 @@ enum Key {
     static let hotkey = "hotkey"                // index into HotKey.presets
     static let history = "history_enabled", keepRecordings = "keep_recordings"
     static let dictionary = "dictionary"
+    static let unlearned = "unlearned_fixes"     // learned fixes you undid or deleted: never learned again
     static let showHUD = "show_hud"
     static let sounds = "sounds_enabled"         // start/stop cues
     static let trigger = "trigger"              // fn | right_option | option_space
-    static let handsFreeShortcut = "hands_free_shortcut" // ⇧⌥ Space toggles hands-free
+    static let handsFreeShortcut = "hands_free_shortcut" // ⇧⌥ Space toggles hands-free (off by default: double-tap the key)
     static let flowBarIdle = "flow_bar_idle"    // show the idle sliver (off unless turned on in Advanced)
     static let onboardingDone = "onboarding_done"
     static let onboardingStep = "onboarding_step"  // resume setup after macOS "Quit & Reopen"
+    static let meetingShortcut = "meeting_shortcut"          // ⌃⌥R starts and stops a meeting recording
+    static let meetingMaxMinutes = "meeting_max_minutes"     // 30 | 60 | 120 | 180
+    static let meetingAudioDays = "meeting_audio_days"       // AudioRetention: 0 delete now, N days, -1 keep
+    static let meetingCallDetection = "meeting_call_detection" // off | ask | auto
+    static let meetingSpeakers = "meeting_speakers"           // tell the other people on a call apart by voice
+    static let learnCorrections = "learn_corrections"         // add words you fix after dictating to the Dictionary
+    static let meetingHideFromCapture = "meeting_hide_from_capture" // flow bar + windows hidden from screen sharing while recording
+    static let meetingEchoFilter = "meeting_echo_filter"     // drop my mic's echo of the others (no headphones)
+    static let meetingConsentShown = "meeting_consent_shown"
+    static let systemAudioState = "system_audio_state"       // what the last meeting's system audio did: ok | silent | unavailable
     static func style(_ c: AppCategory) -> String { "style_\(c.rawValue)" }
 }
 
@@ -35,7 +46,9 @@ enum AppSettings {
             Key.silenceMs: 1500, Key.fillers: true, Key.corrections: true, Key.commands: true,
             Key.capitalize: true, Key.finalPunct: true, Key.polish: true, Key.polishStyle: "casual",
             Key.hotkey: 0, Key.history: true, Key.keepRecordings: false, Key.showHUD: true,
-            Key.trigger: "fn", Key.flowBarIdle: false, Key.handsFreeShortcut: true, Key.sounds: true, Key.onboardingDone: false,
+            Key.trigger: "fn", Key.flowBarIdle: false, Key.handsFreeShortcut: false, Key.sounds: true, Key.onboardingDone: false,
+            Key.meetingShortcut: true, Key.meetingMaxMinutes: MeetingLimit.defaultMinutes, Key.meetingCallDetection: "ask", Key.learnCorrections: true, Key.meetingSpeakers: true,
+            Key.meetingHideFromCapture: true, Key.meetingEchoFilter: true, Key.meetingConsentShown: false,
             Key.style(.messages): StyleChoice.casual.rawValue, Key.style(.email): StyleChoice.formal.rawValue,
             Key.style(.notes): StyleChoice.notes.rawValue, Key.style(.other): StyleChoice.off.rawValue,
         ])
@@ -74,10 +87,40 @@ enum AppSettings {
         return s
     }
 
+    /// The engine for meetings: Whisper (whisper.cpp when imported) in the language setting. Never
+    /// "Translate to English": a meeting is transcribed as spoken. Only Moonshine imported: English
+    /// meetings with chunk-level times. nil when no model can do it.
+    /// `language`: "en", "hi" or "auto"; nil = the language setting.
+    static func meetingSpec(_ models: ModelStore, language: String? = nil) -> EngineSpec? {
+        let language = language ?? d.string(forKey: Key.language) ?? "en"
+        if models.isReady(.whisper) { return EngineSpec(kind: .hindiEnglish, language: language == "auto" ? "" : language) }
+        if language == "en", models.isReady(.moonshine) { return EngineSpec(kind: .fastEnglish, language: "en") }
+        return nil
+    }
+
+    /// Days meeting audio is kept (AudioRetention).
+    static var meetingAudioDays: Int { d.object(forKey: Key.meetingAudioDays) as? Int ?? AudioRetention.defaultDays }
+
+    static var meetingKeepsAudio: Bool { AudioRetention.keeps(meetingAudioDays) }
+
     static var dictionary: PersonalDictionary {
         get { PersonalDictionary.parse(d.string(forKey: Key.dictionary)) }
         set { d.set(newValue.serialize(), forKey: Key.dictionary) }
     }
+
+    /// Fixes learned from your edits that you then undid or deleted (like Wispr Flow, they aren't
+    /// learned again; adding one by hand still works). The latest 500.
+    static func isUnlearned(_ e: PersonalDictionary.Entry) -> Bool {
+        (d.stringArray(forKey: Key.unlearned) ?? []).contains(unlearnedKey(e))
+    }
+
+    static func unlearn(_ entries: [PersonalDictionary.Entry]) {
+        let keys = entries.map(unlearnedKey)
+        let kept = (d.stringArray(forKey: Key.unlearned) ?? []).filter { !keys.contains($0) }
+        d.set(Array((kept + keys).suffix(500)), forKey: Key.unlearned)
+    }
+
+    private static func unlearnedKey(_ e: PersonalDictionary.Entry) -> String { "\(e.from.lowercased())\t\(e.to.lowercased())" }
 
     /// `style` comes from the app being typed in (Styles screen); nil = instant rules only.
     static func cleanup(startsSentence: Bool, endsSentence: Bool, polishAvailable: Bool, style: PolishStyle?) -> CleanupSettings {

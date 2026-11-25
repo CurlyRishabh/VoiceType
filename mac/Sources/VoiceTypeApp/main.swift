@@ -7,7 +7,15 @@ import VoiceTypeCore
 //   VoiceType --selftest <modelsDir> <audio> [en|hi|auto] [whisper|moonshine] [--translate] [--devanagari]
 //   VoiceType --bench <manifest.tsv> <modelsDir> <lang> <engine> <out.tsv> [--translate]  (scripts/bench-asr.sh)
 //   scripts/test-audio.sh runs a clip through every language/translate mode.
+//   VoiceType --meeting <mic.wav> <system.wav> [modelsDir] [en|hi|auto]  (scripts/test-meeting.sh)
+//   VoiceType --corrections <text> [seconds]  (scripts/test-corrections.sh: learning from your edits)
 // Set VOICETYPE_PROMPT="Term one, Term two" to test the whisper.cpp vocabulary prompt.
+if CommandLine.arguments.count >= 3, CommandLine.arguments[1] == "--corrections" {
+    Headless.corrections(CommandLine.arguments)
+}
+if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--meeting" {
+    Headless.meeting(CommandLine.arguments)
+}
 if CommandLine.arguments.count >= 2, CommandLine.arguments[1] == "--bench" {
     Headless.bench(CommandLine.arguments)
 }

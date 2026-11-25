@@ -24,8 +24,31 @@ final class WhisperCppRecognizer: SpeechRecognizing {
         ctx = c
     }
 
-    func transcribe(_ samples: [Float], prompt: String?) -> String {
-        guard !samples.isEmpty else { return "" }
+    /// The language comes with each call (not from `spec`), so one loaded model serves dictation and
+    /// a meeting in different languages.
+    var languagePerCall: Bool { true }
+
+    /// Dictation: a failed decode types nothing, as before.
+    func transcribe(_ samples: [Float], prompt: String?, language: String) -> String {
+        ((try? transcribeTimed(samples, prompt: prompt, language: language))?.segments ?? []).map(\.text).joined(separator: " ")
+    }
+
+    /// Whisper's own segments with their times (`whisper_full_get_segment_t0/t1`, in 10 ms units),
+    /// relative to the start of `samples`.
+    func transcribeTimed(_ samples: [Float], prompt: String?, language: String) throws -> (segments: [TimedText], language: String) {
+        guard !samples.isEmpty else { return ([], language) }
+        let prompt = (prompt?.isEmpty ?? true) ? nil : prompt
+        let language = language.isEmpty ? detectLanguage(samples) : language
+        let segments = try decode(samples, prompt: prompt, language: language)
+        // Short clips (Hindi forced to English most of all) can come back as the prompt itself
+        // instead of the speech: decode once more without it.
+        if let prompt, WhisperPrompt.isEcho(segments.map(\.text).joined(separator: " "), prompt: prompt) {
+            return (try decode(samples, prompt: nil, language: language), language)
+        }
+        return (segments, language)
+    }
+
+    private func decode(_ samples: [Float], prompt: String?, language: String) throws -> [TimedText] {
         var p = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
         p.n_threads = Int32(spec.threads)
         p.translate = false          // large-v3-turbo ignores Whisper's translate task; see AppSettings.engineSpec
@@ -36,31 +59,24 @@ final class WhisperCppRecognizer: SpeechRecognizing {
         p.print_special = false
         p.suppress_blank = true
         p.suppress_nst = true        // drop "[Music]"-style non-speech tokens
-        let prompt = (prompt?.isEmpty ?? true) ? nil : prompt
-        let language = spec.language.isEmpty ? detectLanguage(samples) : spec.language
-
-        func decode(_ prompt: String?) -> String {
-            let status = language.withCString { lang in
-                Self.withOptionalCString(prompt) { promptPtr in
-                    p.language = lang
-                    p.initial_prompt = promptPtr
-                    return samples.withUnsafeBufferPointer { whisper_full(ctx, p, $0.baseAddress, Int32($0.count)) }
-                }
+        let status = language.withCString { lang in
+            Self.withOptionalCString(prompt) { promptPtr in
+                p.language = lang
+                p.initial_prompt = promptPtr
+                return samples.withUnsafeBufferPointer { whisper_full(ctx, p, $0.baseAddress, Int32($0.count)) }
             }
-            guard status == 0 else {
-                NSLog("VoiceType: whisper.cpp decode failed (%d)", status)
-                return ""
-            }
-            return (0..<whisper_full_n_segments(ctx))
-                .compactMap { whisper_full_get_segment_text(ctx, $0).map { String(cString: $0) } }
-                .joined()
-                .trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        let text = decode(prompt)
-        // Short clips (Hindi forced to English most of all) can come back as the prompt itself
-        // instead of the speech: decode once more without it.
-        if let prompt, WhisperPrompt.isEcho(text, prompt: prompt) { return decode(nil) }
-        return text
+        guard status == 0 else {
+            NSLog("VoiceType: whisper.cpp decode failed (%d)", status)
+            throw EngineError("whisper.cpp could not decode this audio (error \(status)).")
+        }
+        return (0..<whisper_full_n_segments(ctx)).compactMap { i in
+            guard let c = whisper_full_get_segment_text(ctx, i) else { return nil }
+            let text = String(cString: c).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            return TimedText(text: text, start: Double(whisper_full_get_segment_t0(ctx, i)) / 100,
+                             end: Double(whisper_full_get_segment_t1(ctx, i)) / 100)
+        }
     }
 
     /// "Both": score the languages ourselves and let LanguageSelection choose between Hindi and

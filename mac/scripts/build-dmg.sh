@@ -15,6 +15,8 @@ echo "==> whisper.cpp framework"
 scripts/fetch-whisper-cpp.sh
 echo "==> Silero VAD (bundled)"
 scripts/fetch-vad.sh
+echo "==> speaker models (bundled)"
+scripts/fetch-diarization.sh
 
 echo "==> unit tests"
 TEST_FLAGS=()
@@ -38,6 +40,9 @@ cp Resources/Info.plist "$APP/Contents/Info.plist"
 # Silero VAD ships in the app (0.6 MB), so users only import the speech model.
 mkdir -p "$APP/Contents/Resources/models/vad"
 cp vendor/silero_vad.onnx "$APP/Contents/Resources/models/vad/"
+# Speaker models (about 30 MB) for telling the other people on a call apart.
+mkdir -p "$APP/Contents/Resources/models/diarization"
+cp vendor/diarization/segmentation.onnx vendor/diarization/embedding.onnx "$APP/Contents/Resources/models/diarization/"
 cp Resources/THIRD_PARTY_NOTICES.txt "$APP/Contents/Resources/THIRD_PARTY_NOTICES.txt"
 
 # App icon

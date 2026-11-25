@@ -36,6 +36,13 @@ Note: Moonshine's legacy non-streaming models for Arabic, Japanese, Korean,
 Mandarin, Spanish, Ukrainian and Vietnamese use a non-commercial licence; do not
 use those for commercial purposes.
 
+INCLUDED: SPEAKER MODELS (for telling the other people on a call apart)
+
+  pyannote segmentation-3.0 (int8 ONNX export by sherpa-onnx)
+                            MIT            Copyright (c) 2022 CNRS
+  3D-Speaker CAM++ English (VoxCeleb), ONNX export by sherpa-onnx
+                            Apache-2.0     Copyright (c) Alibaba Speech Lab (3D-Speaker)
+
 AI polish uses Apple's on-device foundation model through the FoundationModels
 framework that is part of macOS; it is not distributed with VoiceType.
 

@@ -1,8 +1,9 @@
+import AppKit
 import AVFoundation
 import Foundation
 import VoiceTypeCore
 
-/// Command-line modes of the (unsandboxed, dev) binary: --selftest and --bench.
+/// Command-line modes of the (unsandboxed, dev) binary: --selftest, --bench and --meeting.
 enum Headless {
     /// Any file Core Audio reads (wav, flac, mp3, m4a) -> 16 kHz mono Float32.
     static func loadSamples(_ url: URL) throws -> [Float] {
@@ -139,5 +140,138 @@ enum Headless {
             exit(1)
         }
         exit(0) // after the model is freed (see selftest)
+    }
+
+    /// Silero VAD for headless runs: the models folder, VOICETYPE_VAD, the app bundle, or vendor/ (a source checkout).
+    static func vadModel(_ models: URL) -> URL? {
+        if let v = ModelLayout.vad(models.appendingPathComponent("vad")) { return v }
+        if let env = ProcessInfo.processInfo.environment["VOICETYPE_VAD"], FileManager.default.fileExists(atPath: env) { return URL(fileURLWithPath: env) }
+        if let b = Bundle.main.resourceURL.flatMap({ ModelLayout.vad($0.appendingPathComponent("models/vad")) }) { return b }
+        let vendor = URL(fileURLWithPath: "vendor/silero_vad.onnx")
+        return FileManager.default.fileExists(atPath: vendor.path) ? vendor : nil
+    }
+
+    /// VoiceType --meeting <mic.wav> <system.wav> [modelsDir] [en|hi|auto] [--out <dir>] [--speed <x>]
+    ///                     [--no-echo-filter] [--devanagari]
+    /// The whole meeting pipeline on two recordings, exactly as the app runs it: WAVs written as they
+    /// "record", VAD per channel, live chunks decoded one at a time through SpeechHost, per-chunk
+    /// filters, meeting clean-up, echo de-dup, merge, transcript.md/json and meeting.json. The audio is
+    /// fed as fast as possible, or at `--speed` x real time to see how much is left after "Stop".
+    /// Prints transcript.md and a MEETING line with timings and the real-time factor.
+    static func meeting(_ all: [String]) -> Never {
+        var positional: [String] = []
+        var out: URL?
+        var speed: Double?
+        var i = 2
+        while i < all.count {
+            switch all[i] {
+            case "--out" where i + 1 < all.count: out = URL(fileURLWithPath: all[i + 1]); i += 1
+            case "--speed" where i + 1 < all.count: speed = Double(all[i + 1]); i += 1
+            case let a where a.hasPrefix("--"): break
+            default: positional.append(all[i])
+            }
+            i += 1
+        }
+        guard positional.count >= 2 else {
+            print("usage: VoiceType --meeting <mic.wav> <system.wav> [modelsDir] [en|hi|auto] [--out <dir>] [--speed <x>] [--no-echo-filter] [--devanagari]")
+            exit(2)
+        }
+        let models = positional.count > 2 ? URL(fileURLWithPath: positional[2]) : SharedModels.folder(home: ModelStore.realHome)
+        let language = positional.count > 3 ? positional[3] : "en"
+        let echo = !all.contains("--no-echo-filter")
+        let script: OutputScript = all.contains("--devanagari") ? .devanagari : .latin
+        do {
+            let mic = try loadSamples(URL(fileURLWithPath: positional[0]))
+            let system = try loadSamples(URL(fileURLWithPath: positional[1]))
+            guard let vad = vadModel(models) else { throw EngineError("No Silero VAD (models/vad, VOICETYPE_VAD or vendor/silero_vad.onnx).") }
+            let whisper = ModelLayout.whisperCpp(models.appendingPathComponent(ModelSlot.whisper.rawValue)) != nil
+                || ModelLayout.whisper(models.appendingPathComponent(ModelSlot.whisper.rawValue)) != nil
+            let spec = whisper ? EngineSpec(kind: .hindiEnglish, language: language == "auto" ? "" : language)
+                               : EngineSpec(kind: .fastEnglish, language: "en")
+            let cpp = Recognizers.whisperCppModel(spec, modelsRoot: models) != nil
+
+            let start = Date()
+            let folder = out ?? FileManager.default.temporaryDirectory.appendingPathComponent("VoiceType-meeting-\(Int(start.timeIntervalSince1970))")
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            var info = MeetingInfo(title: "Test meeting", startedAt: start)
+            info.languageSetting = language
+            try MeetingFiles.writeInfo(info, to: folder)
+
+            let speech = SpeechHost(modelsRoot: models)
+            let warm = DispatchSemaphore(value: 0)
+            var loadMillis = 0
+            speech.transcribeTimed(spec, samples: [Float](repeating: 0, count: sampleRate), prompt: nil) { r in
+                if case .success(let t) = r { loadMillis = t.loadMillis }
+                warm.signal()
+            }
+            warm.wait()
+
+            let config = MeetingPipeline.Config(folder: folder, spec: spec, prompt: prompt(), cleanup: MeetingCleanup(script: script),
+                                                vadModel: vad, tokenBudget: !cpp && spec.kind == .hindiEnglish)
+            let pipeline = try MeetingPipeline(config: config, speech: speech, startHostTime: nil)
+            let block = sampleRate / 4
+            let length = max(mic.count, system.count)
+            let fed = Date()
+            for at in stride(from: 0, to: length, by: block) {
+                for (ch, s) in [(MeetingChannel.me, mic), (.others, system)] where at < s.count {
+                    let part = Array(s[at..<min(s.count, at + block)])
+                    pipeline.append(ch, part, peak: AudioLevel.peak(part), hostTime: nil)
+                }
+                if let speed, speed > 0 { Thread.sleep(forTimeInterval: Double(block) / Double(sampleRate) / speed) }
+            }
+            let stopped = Date()
+            let done = DispatchSemaphore(value: 0)
+            var outcome: MeetingPipeline.Outcome!
+            pipeline.finish { outcome = $0; done.signal() }
+            done.wait()
+            let finished = MeetingPipeline.write(outcome, info: info, folder: folder, echoFilter: echo, keepAudio: true, stoppedAt: stopped)
+            let total = Date().timeIntervalSince(fed)
+            let t0 = Date()
+            let voices = MeetingSpeakers.identify(folder: folder)?.speakers ?? 0
+            let speakerSeconds = Date().timeIntervalSince(t0)
+            print((try? String(contentsOf: folder.appendingPathComponent(MeetingFiles.transcriptMarkdown), encoding: .utf8)) ?? "(no transcript.md)")
+            print(String(format: "SPEAKERS\tvoices=%d\ttime=%.2fs\tmodels=%@", voices, speakerSeconds, MeetingSpeakers.models == nil ? "missing" : "ok"))
+            let speechSeconds = outcome.speechSeconds.values.reduce(0, +)
+            print(String(format: "MEETING\tengine=%@\tlang=%@\taudio=%.1fs\tspeech=me %.1fs + others %.1fs\tchunks=%d\tdecode=%.2fs\tRTF=%.3f\tspeechRTF=%.3f\ttail=%.2fs\twall=%.2fs\tload=%.2fs\twords=%d\techoRemoved=%d\tstatus=%@\tfolder=%@",
+                         outcome.engine, language, outcome.durationSeconds, outcome.speechSeconds[.me] ?? 0, outcome.speechSeconds[.others] ?? 0,
+                         outcome.chunks, finished.decodeSeconds, finished.rtf ?? 0, finished.decodeSeconds / max(speechSeconds, 0.001),
+                         finished.tailSeconds ?? 0, total, Double(loadMillis) / 1000, finished.wordCount, finished.echoLinesRemoved,
+                         finished.status.rawValue, folder.path))
+            speech.releaseAndWait()
+        } catch {
+            print("MEETING FAILED: \(error.localizedDescription)")
+            exit(1)
+        }
+        exit(0) // after the model is freed (see selftest)
+    }
+
+    /// Learning from corrections on a real text field, through the app's own code: reads the focused
+    /// field of the frontmost app, pastes `text` with ⌘V, then watches the field with CorrectionWatch
+    /// while a script edits it (scripts/test-corrections.sh). Prints FIELD, PASTED, then LEARNED.
+    static func corrections(_ all: [String]) -> Never {
+        let text = all[2]
+        let seconds = all.count > 3 ? Double(all[3]) ?? 30 : 30
+        let front = Inserter.frontmostPID().flatMap { NSRunningApplication(processIdentifier: $0)?.localizedName } ?? "?"
+        guard let field = Inserter.focusedField() else {
+            print("FIELD none in \(front)")
+            exit(2)
+        }
+        print("FIELD \(front) before=\(field.before.count) after=\(field.after.count)")
+        guard Inserter.insert(text) == .pasted else {
+            print("PASTE copied only (no Accessibility)")
+            exit(3)
+        }
+        print("PASTED")
+        fflush(stdout)
+        let watch = CorrectionWatch()
+        watch.watch(field, typed: text) { learned in
+            print("LEARNED " + learned.map { "\($0.from)→\($0.to)" }.joined(separator: ", "))
+            exit(0)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
+            print("LEARNED none")
+            exit(0)
+        }
+        dispatchMain()
     }
 }

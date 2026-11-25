@@ -16,6 +16,9 @@ enum TriggerKey: String, CaseIterable {
         }
     }
 
+    /// For short hints: "fn", "Right ⌥", "⌥ Space".
+    var short: String { self == .fn ? "fn" : title }
+
     static var current: TriggerKey { TriggerKey(rawValue: UserDefaults.standard.string(forKey: Key.trigger) ?? "") ?? .fn }
 }
 
@@ -25,8 +28,8 @@ enum TriggerKey: String, CaseIterable {
 /// LISTEN-ONLY event tap: it sees key events but cannot block or change them, and it is allowed in
 /// the App Sandbox once the user grants Input Monitoring. Only the trigger key, esc and the fact
 /// that "some other key was pressed" are used; key contents are never recorded.
-/// ⌥ Space keeps using Carbon's RegisterEventHotKey, which needs no permission; so does the
-/// separate hands-free shortcut (⇧⌥ Space).
+/// ⌥ Space keeps using Carbon's RegisterEventHotKey, which needs no permission; so do the
+/// separate hands-free shortcut (⇧⌥ Space) and the meeting shortcut (⌃⌥ R).
 ///
 /// The tap runs on its own thread and stamps each press when it happens. On the main thread a slow
 /// moment (starting the microphone) could delay or drop the release of a quick tap, which turned a
@@ -37,6 +40,8 @@ final class KeyMonitor {
     var onOtherKey: (() -> Void)?
     var onEscape: (() -> Void)?
     var onHandsFreeKey: (() -> Void)?
+    /// ⌃⌥ R: start or stop a meeting recording.
+    var onMeetingKey: (() -> Void)?
 
     private(set) var trigger: TriggerKey = .fn
     private var tap: CFMachPort?
@@ -44,7 +49,9 @@ final class KeyMonitor {
     private var triggerDown = false // tap thread (or main, for ⌥ Space)
     private let hotKey = HotKey(id: 1)
     private let handsFreeHotKey = HotKey(id: 2)
+    private let meetingHotKey = HotKey(id: 3)
     private var lastHandsFreePress: TimeInterval = 0
+    private var lastMeetingPress: TimeInterval = 0
     var pausedUntil: Date?
 
     var isPaused: Bool { (pausedUntil ?? .distantPast) > Date() }
@@ -63,7 +70,20 @@ final class KeyMonitor {
             self.lastHandsFreePress = now
             self.onHandsFreeKey?()
         }
+        // Works while "Pause" is on: that pauses the dictation key, not meetings.
+        meetingHotKey.onPress = { [weak self] in
+            guard let self else { return }
+            let now = ProcessInfo.processInfo.systemUptime
+            guard now - self.lastMeetingPress > 0.5 else { return } // key repeat, or a double press
+            self.lastMeetingPress = now
+            self.onMeetingKey?()
+        }
     }
+
+    /// ⌃⌥ R starts and stops a meeting recording (Settings → Meetings). Chosen to clash with neither
+    /// VoiceType's dictation keys nor other dictation apps' usual meeting shortcuts.
+    static var meetingShortcutOn: Bool { UserDefaults.standard.bool(forKey: Key.meetingShortcut) }
+    static let meetingShortcutTitle = "⌃⌥R"
 
     /// ⇧⌥ Space starts and stops hands-free dictation (Settings → Dictation).
     static var handsFreeShortcutOn: Bool { UserDefaults.standard.bool(forKey: Key.handsFreeShortcut) }
@@ -83,6 +103,11 @@ final class KeyMonitor {
             handsFreeHotKey.register(HotKey.Preset(title: "⇧⌥ Space", keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey | shiftKey)))
         } else {
             handsFreeHotKey.unregister()
+        }
+        if Self.meetingShortcutOn {
+            meetingHotKey.register(HotKey.Preset(title: Self.meetingShortcutTitle, keyCode: UInt32(kVK_ANSI_R), modifiers: UInt32(controlKey | optionKey)))
+        } else {
+            meetingHotKey.unregister()
         }
         // The tap also provides esc and "other key" for every trigger, so create it whenever possible.
         if tap == nil { installTap() }
