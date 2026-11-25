@@ -21,7 +21,7 @@ struct MeetingsView: View {
     private var list: some View {
         let items = store.entries.filter { store.matches($0, model.meetingQuery) }
         return VStack(spacing: 0) {
-            RecordCard(meetings: meetings) { if let id = meetings.currentID { open(id) } }.padding(.horizontal, 24).padding(.top, 16)
+            RecordCard(meetings: meetings, start: { app.toggleMeetingRecording() }) { if let id = meetings.currentID { open(id) } }.padding(.horizontal, 24).padding(.top, 16)
             if !store.entries.isEmpty {
                 HStack(spacing: 8) {
                     Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundColor(.secondary).accessibilityHidden(true)
@@ -93,6 +93,8 @@ enum MeetingActions {
 /// Start / stop at the top of the tab, with what is going on.
 private struct RecordCard: View {
     @ObservedObject var meetings: MeetingController
+    /// Like the shortcut: during a call, records that call.
+    let start: () -> Void
     /// Opens the meeting being recorded (its live transcript).
     var showLive: () -> Void = {}
     private let red = Color(red: 1, green: 0.353, blue: 0.373)
@@ -109,7 +111,7 @@ private struct RecordCard: View {
                             .font(.system(size: 13)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer(minLength: 8)
-                    Button("Start recording") { meetings.start() }.keyboardShortcut("r", modifiers: [.command])
+                    Button("Start recording") { start() }.keyboardShortcut("r", modifiers: [.command])
                 case .recording:
                     Circle().fill(red).frame(width: 10, height: 10).accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 3) {

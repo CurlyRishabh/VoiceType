@@ -25,6 +25,7 @@ final class CallDetector {
     func stop() {
         timer?.cancel()
         timer = nil
+        activeCall = nil
         queue.async { self.watch = CallWatch() }
     }
 
@@ -32,13 +33,30 @@ final class CallDetector {
     private(set) var activeCall: CallApps.App?
 
     private func poll() {
-        let apps = Self.appsUsingMic()
+        let apps = Self.testCall() ?? Self.appsUsingMic()
         let event = watch.feed(apps, now: ProcessInfo.processInfo.systemUptime)
         let active = watch.active
         DispatchQueue.main.async {
+            guard self.timer != nil else { return } // stopped meanwhile
             self.activeCall = active
             if let event { self.onEvent?(event) }
         }
+    }
+
+    /// For testing the call card without a real call: `VOICETYPE_TEST_CALL="us.zoom.xos 10 60"` makes
+    /// that app "use the mic" from 10 s to 60 s after launch (and nothing else counts meanwhile).
+    private static let testCallSpec: (app: CallApps.App, from: Double, to: Double)? = {
+        let parts = (ProcessInfo.processInfo.environment["VOICETYPE_TEST_CALL"] ?? "").split(separator: " ")
+        guard parts.count == 3, let app = CallApps.app(bundleID: String(parts[0])),
+              let from = Double(parts[1]), let to = Double(parts[2]) else { return nil }
+        return (app, from, to)
+    }()
+    private static let launched = ProcessInfo.processInfo.systemUptime
+
+    private static func testCall() -> [CallApps.App]? {
+        guard let t = testCallSpec else { return nil }
+        let s = ProcessInfo.processInfo.systemUptime - launched
+        return s >= t.from && s < t.to ? [t.app] : []
     }
 
     /// Call apps with microphone input running right now, VoiceType excluded.

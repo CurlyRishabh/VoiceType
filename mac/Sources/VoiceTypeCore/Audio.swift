@@ -237,18 +237,41 @@ public enum WhisperPrompt {
     public static let maxCharacters = 600
 
     /// Comma-separated glossary of the spellings the user wants ("Cassie QC agent, ChargeBee.").
-    public static func build(_ terms: [String]) -> String? {
+    public static func build(_ terms: [String]) -> String? { build(terms, extra: []) }
+
+    /// Names from the screen at most this many characters of the prompt.
+    public static let extraCharacters = 250
+
+    /// The Dictionary's spellings (`terms`) and names from the screen (`extra`, at most
+    /// `extraCharacters`). The names go first: Whisper keeps the end of a long prompt, so the
+    /// Dictionary is what survives if it's cut.
+    public static func build(_ terms: [String], extra: [String]) -> String? {
         var seen = Set<String>()
-        var out: [String] = []
-        var length = 0
-        for t in terms {
-            let s = t.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !s.isEmpty, seen.insert(s.lowercased()).inserted else { continue }
-            if length + s.count + 2 > maxCharacters { break }
-            out.append(s)
-            length += s.count + 2
+        func take(_ list: [String], budget: Int) -> [String] {
+            var out: [String] = [], length = 0
+            for t in list {
+                let s = t.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !s.isEmpty, seen.insert(s.lowercased()).inserted else { continue }
+                if length + s.count + 2 > budget { break }
+                out.append(s)
+                length += s.count + 2
+            }
+            return out
         }
-        return out.isEmpty ? nil : out.joined(separator: ", ") + "."
+        let dictionary = take(terms, budget: maxCharacters)
+        let used = dictionary.reduce(0) { $0 + $1.count + 2 }
+        let names = take(extra, budget: min(extraCharacters, maxCharacters - used))
+        let all = names + dictionary
+        return all.isEmpty ? nil : all.joined(separator: ", ") + "."
+    }
+
+    /// Decoded again without the prompt (a suspected echo), it says the same thing, spelling aside:
+    /// the first decode was real speech, e.g. two names from the screen ("Dessi Tsvetkova" /
+    /// "Desi Svetkova"), and keeps the prompt's spellings. An echo decodes to something else, or nothing.
+    public static func sameSpeech(_ prompted: String, _ plain: String) -> Bool {
+        let x = Array(normalize(prompted).filter { $0 != " " }), y = Array(normalize(plain).filter { $0 != " " })
+        guard !x.isEmpty, !y.isEmpty else { return false }
+        return Double(CorrectionLearner.distance(x, y)) <= 0.4 * Double(max(x.count, y.count))
     }
 
     /// Whisper can "read back" its prompt when there is little real speech. Treat output made only of

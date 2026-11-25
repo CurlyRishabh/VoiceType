@@ -567,6 +567,12 @@ final class MeetingController: ObservableObject {
 
     // MARK: stop
 
+    /// A call started while this (hand-started) recording was going: it now ends with that call.
+    func adoptCall() {
+        guard phase == .recording else { return }
+        startedForCall = true
+    }
+
     func stop(_ reason: MeetingInfo.StopReason = .user) {
         guard phase == .recording, let pipeline, var info, let folder else { return }
         timer?.invalidate()

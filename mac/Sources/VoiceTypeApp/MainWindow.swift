@@ -8,14 +8,16 @@ import VoiceTypeCore
 /// has no SwiftUI macro plugin).
 final class MainModel: ObservableObject {
     enum Section: Int, CaseIterable, Identifiable {
-        case home, history, meetings, dictionary, styles
+        case home, history, scratchpad, meetings, dictionary, snippets, styles
         var id: Int { rawValue }
         var title: String {
             switch self {
             case .home: return "Home"
             case .history: return "History"
+            case .scratchpad: return "Scratchpad"
             case .meetings: return "Meetings"
             case .dictionary: return "Dictionary"
+            case .snippets: return "Snippets"
             case .styles: return "Styles"
             }
         }
@@ -28,6 +30,13 @@ final class MainModel: ObservableObject {
     @Published var to = ""
     @Published var entries: [PersonalDictionary.Entry] = AppSettings.dictionary.entries
     @Published var historyQuery = ""
+    // Snippets tab: the list and the add/edit form.
+    @Published var snippets: [Snippet] = AppSettings.snippets
+    @Published var snippetTrigger = ""
+    @Published var snippetText = ""
+    @Published var snippetAlone = false
+    /// The cue of the snippet being edited (it is replaced on Save, even if the cue changes).
+    @Published var snippetEditing: String?
     /// The Styles row whose example is shown.
     @Published var styleExample: AppCategory = .messages
     @Published var advancedOpen = false
@@ -124,6 +133,8 @@ struct MainView: View {
                 case .history: HistoryView(model: model, history: app.history)
                 case .meetings: MeetingsView(app: app, model: model, store: app.meetingStore, meetings: app.meetings)
                 case .dictionary: DictionaryView(model: model)
+                case .snippets: SnippetsView(model: model)
+                case .scratchpad: ScratchpadView(app: app, notes: app.scratchpad)
                 case .styles: StylesView(app: app, model: model)
                 }
             }
@@ -133,7 +144,7 @@ struct MainView: View {
             Divider()
             StatusFooter(app: app, model: model).background(Mist.bar)
         }
-        .frame(minWidth: 640, minHeight: 480)
+        .frame(minWidth: 720, minHeight: 480) // room for the seven tabs in the toolbar
         .background(Mist.window)
         .tint(Mist.accent)
     }
@@ -682,6 +693,7 @@ struct SettingsPane: View {
     @AppStorage(Key.handsFreeShortcut) var handsFreeShortcut = false
     @AppStorage(Key.sounds) var sounds = true
     @AppStorage(Key.learnCorrections) var learnCorrections = true
+    @AppStorage(Key.screenNames) var screenNames = true
     @AppStorage(Key.language) var language = "en"
     @AppStorage(Key.englishEngine) var engine = EngineKind.hindiEnglish.rawValue
     @AppStorage(Key.script) var script = "latin"
@@ -760,6 +772,13 @@ struct SettingsPane: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Learn from my corrections")
                         Text("When you fix how a dictated word is spelled (a name, a product), it is added to the Dictionary. Shown with Undo.")
+                            .font(.caption).foregroundColor(.secondary)
+                    }
+                }
+                Toggle(isOn: $screenNames) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Spell names on screen right")
+                        Text("Names in the window you’re dictating into (who you’re messaging, people in the conversation) are given to the speech model as spelling hints. Read on this Mac for that dictation only; never saved.")
                             .font(.caption).foregroundColor(.secondary)
                     }
                 }
@@ -915,12 +934,12 @@ struct SettingsPane: View {
             }
             Picker(selection: $meetingCallDetection) {
                 Text("Ask me").tag("ask")
-                Text("Start recording automatically").tag("auto")
+                Text("Record automatically (10 s to cancel)").tag("auto")
                 Text("Do nothing").tag("off")
             } label: {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("When a call starts")
-                    Text("Zoom, Teams, Slack huddles, FaceTime, Webex, or a browser (Google Meet) using the mic for a few seconds. Automatic recordings also stop when the call ends.")
+                    Text("Zoom, Teams, Slack huddles, FaceTime, Webex, or a browser (Google Meet) using the mic for a few seconds. A card offers to record for 20 s (it waits while your mouse is on it); the menu bar menu offers it until the call ends. A recording of a call stops by itself when the call ends.")
                         .font(.caption).foregroundColor(.secondary)
                 }
             }

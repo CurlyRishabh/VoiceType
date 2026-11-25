@@ -79,6 +79,8 @@ public struct CleanupOptions: Sendable, Equatable {
     public var autoCapitalize = true
     public var addFinalPunctuation = true
     public var dictionary = PersonalDictionary.empty
+    /// Spoken cues typed as saved text (after the Dictionary; a dictation with one isn't polished).
+    public var snippets = SnippetSet.empty
     /// False when inserting mid-sentence, so the first word isn't force-capitalised.
     public var startsSentence = true
     public init() {}

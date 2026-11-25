@@ -162,14 +162,21 @@ and `tailSeconds` are recorded (also in Settings → Advanced → Debug as "meet
 
 ### 12. Call detection (Settings › Meetings › When a call starts)
 1. *Ask me*: join a Zoom/Teams/Slack huddle/FaceTime call. After ~6 s with the mic in use the flow
-   bar says "Call started in <app>. Record it?"; *Record* starts a meeting named "Zoom call" etc.
-   A quick voice message (under 6 s) asks nothing.
-2. Google Meet in Chrome/Safari: always asks, even in automatic mode.
-3. *Start recording automatically*: a native call app starts recording on its own; hanging up
-   stops it ~20 s later, only once the others are quiet too. A meeting you started yourself is
-   never stopped automatically (you get "Stop recording?" instead).
-4. A second call that starts while the first is still "Wrapping up…" is offered once it finishes.
-5. *Do nothing*: no prompts.
+   bar shows a card "Slack huddle started" with *Record* and ×. *Record* starts a meeting named
+   "Slack huddle" etc. A quick voice message (under 6 s) asks nothing.
+2. The card stays 20 s; with the mouse on it, it stays until the mouse leaves. Dictate while it
+   shows: it gives way to the dictation and comes back afterwards. × (or the 20 s) closes it, but
+   the menu bar menu keeps *Record Slack huddle* until the call ends.
+3. Google Meet in Chrome/Safari: "Call started in Chrome", always asks, even in automatic mode.
+4. *Record automatically (10 s to cancel)*: a native call app shows "Recording Zoom call in 10 s"
+   counting down, with *Record now* and × (cancel). At 0 it records.
+5. A recording of the call (from the card, the menu, or the shortcut / Start recording pressed
+   during the call) stops by itself ~20 s after hanging up, once the others are quiet too:
+   "Transcript ready: the call ended". A meeting started before any call asks "Stop recording?".
+6. Without a real call: launch with `open -n ~/Applications/VoiceType.app --env
+   VOICETYPE_TEST_CALL="com.tinyspeck.slackmacgap 4 60"` (that app "uses the mic" from 4 s to 60 s).
+7. A second call that starts while the first is still "Wrapping up…" is offered once it finishes.
+8. *Do nothing*: no prompts.
 
 ### 13. Audio retention, Delete audio, Re-transcribe
 1. Default keeps audio 7 days: a new meeting folder keeps mic.wav/system.wav; the detail view shows
@@ -225,3 +232,17 @@ and `tailSeconds` are recorded (also in Settings → Advanced → Debug as "meet
 5. In the Dictionary's fields, ⌘C / ⌘V / ⌘Z work; ⌘W closes the window, ⌘, opens Settings.
 6. Open a second copy of VoiceType (say a fresh build): "VoiceType is already running" in front,
    and it quits; dictation types once.
+
+### 18. Snippets, Scratchpad, names on screen, History
+1. Snippets tab: "insert date" and "insert time" are there. Dictate "insert date" alone: only the
+   date is typed ("25 November 2026"), no full stop. "Here is my email, thanks" with a "my email"
+   snippet: the address replaces the cue. "my emails" isn't a cue. Add from an example chip, edit
+   (pencil) and delete work; the same cue twice replaces the old one.
+2. Scratchpad: menu bar → *New Scratchpad note* opens the tab with the cursor in a new note;
+   dictate into it; quit and reopen: the note is there. Empty notes aren't kept. Search filters.
+3. Names on screen: in a Slack DM with someone whose name Whisper gets wrong, dictate their name:
+   spelled as on screen. diagnostics.log says "screen names: N from M texts in X ms" (never the
+   names). Turning off Settings → Dictation → *Spell names on screen right* stops it.
+4. History: replace history.json in the app's container with broken JSON and relaunch: History is
+   empty, the broken file is kept as history-unreadable-<time>.json, and new dictations are saved.
+

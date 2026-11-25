@@ -42,8 +42,12 @@ final class WhisperCppRecognizer: SpeechRecognizing {
         let segments = try decode(samples, prompt: prompt, language: language)
         // Short clips (Hindi forced to English most of all) can come back as the prompt itself
         // instead of the speech: decode once more without it.
-        if let prompt, WhisperPrompt.isEcho(segments.map(\.text).joined(separator: " "), prompt: prompt) {
-            return (try decode(samples, prompt: nil, language: language), language)
+        let text = segments.map(\.text).joined(separator: " ")
+        if let prompt, WhisperPrompt.isEcho(text, prompt: prompt) {
+            let plain = try decode(samples, prompt: nil, language: language)
+            // Names really said (two from the screen, say) sound the same without the prompt: keep its spelling.
+            if WhisperPrompt.sameSpeech(text, plain.map(\.text).joined(separator: " ")) { return (segments, language) }
+            return (plain, language)
         }
         return (segments, language)
     }

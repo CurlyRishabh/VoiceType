@@ -4,7 +4,16 @@ import VoiceTypeCore
 
 /// What the flow bar shows.
 final class FlowModel: ObservableObject {
-    enum Phase: Equatable { case idle, listening, handsFree, typing, notice, meeting }
+    enum Phase: Equatable { case idle, listening, handsFree, typing, notice, meeting, call }
+
+    /// The card offered when a call starts in another app: Record or dismiss, or (set to record
+    /// automatically) a countdown to the recording that can be cancelled.
+    struct Call: Equatable {
+        /// "Slack huddle started", "Recording Slack huddle in 7 s".
+        var text: String
+        /// Seconds until recording starts by itself; nil when it only asks.
+        var countdown: Int?
+    }
 
     /// A meeting recording, shown whenever no dictation needs the bar.
     struct Meeting: Equatable {
@@ -30,6 +39,9 @@ final class FlowModel: ObservableObject {
     @Published var meeting: Meeting?
     @Published var meetingLevels = Array(repeating: MeetingLevel(), count: 14)
     @Published var meetingHover = false { didSet { if meetingHover != oldValue { onResize() } } }
+    @Published var call: Call?
+    /// The mouse is over the call card: it stays (its time doesn't run) until the mouse leaves.
+    @Published var callHover = false
 
     var onStop: () -> Void = {}
     var onMeetingStop: () -> Void = {}
@@ -39,6 +51,8 @@ final class FlowModel: ObservableObject {
     /// Click on the meeting pill (not its Stop button): the live transcript.
     var onMeetingOpen: () -> Void = {}
     var onNoticeAction: () -> Void = {}
+    var onCallRecord: () -> Void = {}
+    var onCallDismiss: () -> Void = {}
 
     func push(_ level: Float) {
         levels.removeFirst()
@@ -89,9 +103,12 @@ final class FlowBar {
                                                           object: nil, queue: .main) { [weak self] _ in self?.layout() }
     }
 
-    /// `.idle` means "nothing for dictation": the meeting pill when a meeting is on.
+    /// `.idle` means "nothing for dictation": the call card while one is offered, else the meeting
+    /// pill when a meeting is on.
     func set(_ requested: FlowModel.Phase) {
-        let phase = requested == .idle && model.meeting != nil ? .meeting : requested
+        var phase = requested
+        if phase == .idle { phase = model.call != nil ? .call : model.meeting != nil ? .meeting : .idle }
+        if phase != .call { model.callHover = false }
         if phase != .notice { noticeHide?.cancel() }
         if phase == .listening || phase == .handsFree, model.phase != .listening, model.phase != .handsFree {
             model.levels = model.levels.map { _ in 0 }
@@ -110,6 +127,19 @@ final class FlowBar {
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: item)
     }
 
+    /// Offers (or updates, or withdraws) the call card. It waits while a dictation or notice has the bar.
+    func setCall(_ c: FlowModel.Call?) {
+        guard c != model.call else { return }
+        model.call = c
+        if c == nil {
+            if model.phase == .call { set(.idle) }
+        } else if model.phase == .idle || model.phase == .meeting {
+            set(.call)
+        } else if model.phase == .call {
+            layout()
+        }
+    }
+
     /// Meeting on (or updated) / off. The pill comes back after any dictation or notice.
     func setMeeting(_ m: FlowModel.Meeting?) {
         let was = model.meeting != nil
@@ -121,7 +151,7 @@ final class FlowBar {
             if model.phase == .meeting { set(.idle) }
         } else if !was || model.phase == .idle {
             if !was { model.meetingLevels = model.meetingLevels.map { _ in .init() } }
-            if model.phase == .idle || model.phase == .meeting { set(.meeting) }
+            if model.phase == .idle || model.phase == .meeting { set(.idle) }
         } else if model.phase == .meeting, size(for: .meeting) != before {
             layout() // wrapping up, mic only, past an hour: the pill changes width
         }
@@ -144,6 +174,11 @@ final class FlowBar {
         case .notice:
             let text = (model.notice as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: .medium)]).width
             return NSSize(width: min(560, text + (model.noticeAction == nil ? 48 : 110)), height: 44)
+        case .call:
+            let font = NSFont.systemFont(ofSize: 13, weight: .medium)
+            let text = ((model.call?.text ?? "") as NSString).size(withAttributes: [.font: font]).width
+            // "Record now" (a countdown) is wider than "Record".
+            return NSSize(width: min(560, text + (model.call?.countdown == nil ? 192 : 222)), height: 44)
         case .meeting:
             guard let m = model.meeting else { return NSSize(width: 64, height: 20) }
             if m.wrappingUp { return NSSize(width: 168, height: 44) }
@@ -194,6 +229,7 @@ struct FlowBarView: View {
             case .typing: typing
             case .notice: notice
             case .meeting: meeting
+            case .call: call
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -328,6 +364,33 @@ struct FlowBarView: View {
 
     static func clock(_ s: Int) -> String {
         s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60)
+    }
+
+    /// The call card: Record (or "Record now" during a countdown) and a close button. Hovering keeps it.
+    private var call: some View {
+        let c = model.call
+        return shell {
+            Image(systemName: "phone.fill").font(.system(size: 11)).foregroundColor(teal)
+            Text(c?.text ?? "").font(.system(size: 13, weight: .medium).monospacedDigit()).foregroundColor(.white).lineLimit(1)
+            Button(action: model.onCallRecord) {
+                HStack(spacing: 5) {
+                    Circle().fill(red).frame(width: 7, height: 7)
+                    Text(c?.countdown == nil ? "Record" : "Record now").font(.system(size: 12, weight: .semibold)).foregroundColor(.black)
+                }
+                .padding(.horizontal, 12).frame(height: 26).background(Capsule().fill(Color.white))
+            }
+            .buttonStyle(.plain).help("Record this call and transcribe it on this Mac").accessibilityLabel("Record the call")
+            Button(action: model.onCallDismiss) {
+                Image(systemName: "xmark").font(.system(size: 10, weight: .bold)).foregroundColor(.white)
+                    .frame(width: 26, height: 26).background(Circle().fill(Color.white.opacity(0.14)))
+            }
+            .buttonStyle(.plain)
+            .help(c?.countdown == nil ? "Not this time (Record stays in the menu bar menu during the call)" : "Don’t record this call")
+            .accessibilityLabel(c?.countdown == nil ? "Dismiss" : "Cancel recording")
+        }
+        .padding(.trailing, -8)
+        .onHover { model.callHover = $0 }
+        .accessibilityElement(children: .contain)
     }
 
     private var notice: some View {

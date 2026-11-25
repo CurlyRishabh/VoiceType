@@ -54,8 +54,11 @@ imports it again. (Models imported by version 1.0 are moved there on first launc
   talk, a timer with ✕ and ■ in hands-free mode, "Typing…", or a one-line notice with a **Fix**
   button. (Want a small sliver there when idle too? Settings → Advanced → *Show the flow bar when idle*.)
 * The **VoiceType window** (menu bar → *Open VoiceType…*) has tabs for **History** (search and
-  re-copy what you said), **Meetings** (see [Meeting transcription](#meeting-transcription)),
-  **Dictionary** and **Styles**. The gear button opens **Settings**.
+  re-copy what you said), **Scratchpad** (quick notes you can dictate into; menu bar → *New
+  Scratchpad note*), **Meetings** (see [Meeting transcription](#meeting-transcription)),
+  **Dictionary**, **Snippets** and **Styles**. The gear button opens **Settings**.
+* **Snippets**: say a short cue ("my calendar link") and the saved text is typed instead, exactly
+  as saved. `{date}`, `{time}` and `{day}` are filled in; "insert date" and "insert time" come ready.
 * Long hands-free dictations are transcribed sentence by sentence while you talk, so the text is
   ready almost as soon as you stop (limit: 15 minutes; holding: 5 minutes).
 * **Styles** pick the AI-polish tone from the app you're typing in: Messages/Slack/WhatsApp →
@@ -208,6 +211,13 @@ your Dictionary (e.g. `Cassie QC agent`, `ChargeBee`) are given to Whisper as a 
 so it hears them correctly instead of "CASI QC agent" or "charge B". This applies to the Hindi +
 English engine (choose it as the English engine in Settings to use it for English too). Moonshine
 and the sherpa-onnx Whisper can't take a prompt; the Dictionary still fixes their output afterwards.
+
+**So do the names on your screen.** When you start dictating, VoiceType reads the names in the
+window you're dictating into: who you're messaging (the window title), people in the conversation,
+names in the text around the cursor. They're added to that prompt, so "Kritant" is written as on
+screen, not "Crittand". This is read on your Mac, for that dictation only, and never saved
+(Settings → Dictation → *Spell names on screen right*). In a test with Indian-English voices, names
+came out right 43 times in 54, against 14 without it.
 
 **AI polish** uses Apple Intelligence's on-device model (macOS 26+, Apple silicon, Apple
 Intelligence turned on in System Settings). There's nothing to download. The app uses only

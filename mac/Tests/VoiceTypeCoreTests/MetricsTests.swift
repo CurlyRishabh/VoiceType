@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import VoiceTypeCore
 
@@ -32,5 +33,21 @@ import Testing
         #expect(ASRMetrics.wer(reference: "a b c", hypothesis: "", language: "en").errors == 3)
         #expect(ASRMetrics.wer(reference: "", hypothesis: "", language: "en").rate == 0)
         #expect((ASRMetrics.Score(errors: 1, refCount: 4) + .init(errors: 1, refCount: 6)).rate == 0.2)
+    }
+}
+
+@Suite struct SafeJSONTests {
+    struct Row: Codable, Equatable { let id: Int; let text: String }
+
+    @Test func badEntrySkippedNotEverything() {
+        let data = Data(#"[{"id":1,"text":"a"},{"id":"x"},{"id":3,"text":"c"}]"#.utf8)
+        let r = SafeJSON.decodeArray(Row.self, from: data)
+        #expect(r?.items == [Row(id: 1, text: "a"), Row(id: 3, text: "c")] && r?.dropped == 1)
+    }
+
+    @Test func damagedFileIsNotAList() {
+        #expect(SafeJSON.decodeArray(Row.self, from: Data(#"[{"id":1,"text":"a"},{"id":2,"te"#.utf8)) == nil)
+        #expect(SafeJSON.decodeArray(Row.self, from: Data()) == nil)
+        #expect(SafeJSON.decodeArray(Row.self, from: Data("[]".utf8))?.items == [])
     }
 }
