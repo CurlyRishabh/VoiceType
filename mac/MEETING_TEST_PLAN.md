@@ -15,9 +15,11 @@
 
 ## Manual test plan
 
-Needs the signed app (`scripts/build-dmg.sh`), real permissions and real meeting apps. Ad-hoc
-builds reset permissions on every rebuild: remove VoiceType from each Privacy & Security list
-first if something looks denied. Where a step says "check the folder", that is
+Needs the signed app and real meeting apps. Start with `scripts/reinstall-local.sh`: it builds,
+clears every macOS permission VoiceType had (entries from differently signed builds still look
+"on" in System Settings but don't apply), installs to `~/Applications` and opens setup, where each
+step now says in green or orange whether its permission really is on. Builds signed with the local
+"VoiceType Local" identity keep their permissions across rebuilds; ad-hoc builds don't. Where a step says "check the folder", that is
 `~/Library/Application Support/VoiceType/Meetings/<date time title>/`.
 
 ### 1. Permissions and first run
@@ -129,3 +131,52 @@ and `tailSeconds` are recorded (also in Settings → Advanced → Debug as "meet
 ### 9. Shortcut
 1. Settings → Meetings → shortcut off: ⌃⌥R does nothing; on again: works.
 2. With VoiceOver on, ⌃⌥ is VoiceOver's modifier: check whether ⌃⌥R still reaches VoiceType.
+
+### 10. Setup screens and paste
+1. After `reinstall-local.sh`: each setup step shows an orange "…is off" line until its permission
+   is granted, then green. The Models step says "Speech model already installed" (no Download)
+   when the model is there.
+2. Dictate into TextEdit, Slack, Chrome and Notes: the text is pasted, not just copied. If it is
+   only copied, the notice says "Copied, not pasted: allow Accessibility"; check
+   `~/Library/Application Support/VoiceType/diagnostics.log` (permission state at launch and each
+   paste's outcome; no dictated text).
+3. Menu bar → *Play start/stop sounds* toggles the purr/pop (same as Settings › Dictation).
+
+### 11. Live transcript and notes
+1. While recording, click the flow-bar pill (not Stop) or *Live transcript* on the Meetings card:
+   the meeting opens with lines appearing a few seconds after each sentence; *Follow* keeps the
+   newest line in view, also during a long monologue.
+2. Type a note and press Return: it appears as an orange **Note** line at that moment. Type a
+   note and stop the meeting without pressing Return: it is still saved.
+3. After the meeting: notes are in transcript.md as `📝 **My note:**` lines and in *Copy for AI*;
+   a note added on a finished meeting goes at its end.
+
+### 12. Call detection (Settings › Meetings › When a call starts)
+1. *Ask me*: join a Zoom/Teams/Slack huddle/FaceTime call. After ~6 s with the mic in use the flow
+   bar says "Call started in <app>. Record it?"; *Record* starts a meeting named "Zoom call" etc.
+   A quick voice message (under 6 s) asks nothing.
+2. Google Meet in Chrome/Safari: always asks, even in automatic mode.
+3. *Start recording automatically*: a native call app starts recording on its own; hanging up
+   stops it ~20 s later, only once the others are quiet too. A meeting you started yourself is
+   never stopped automatically (you get "Stop recording?" instead).
+4. A second call that starts while the first is still "Wrapping up…" is offered once it finishes.
+5. *Do nothing*: no prompts.
+
+### 13. Audio retention, Delete audio, Re-transcribe
+1. Default keeps audio 7 days: a new meeting folder keeps mic.wav/system.wav; the detail view shows
+   *Re-transcribe* and *Delete audio*.
+2. *Re-transcribe → Hindi* (or English + Hindi): status goes to Transcribing, then "Transcribed
+   again"; notes survive. Renaming during it: the folder follows afterwards.
+3. Make the model unavailable (rename the .bin) and re-transcribe: "Re-transcribing failed: the
+   previous transcript is kept", and it is.
+4. *Delete audio*: the WAVs go, the transcript stays, the buttons disappear.
+5. Set "1 day" and move an old meeting's `endedAt` back two days in meeting.json: its audio is
+   gone within the hour (or at the next launch). Partial/failed meetings keep audio at least 7 days.
+
+### 14. Learning from corrections (Settings › Dictation › Learn from my corrections)
+1. Dictate a sentence with a name it gets wrong ("Rishab"), fix the spelling in the field and
+   pause ~5 s: "Added “Rishabh” to Dictionary" with *Undo*. Undo removes it.
+2. Rewriting a word into a different one ("report" → "invoice"), adding or deleting words, or
+   editing text before the dictation adds nothing.
+3. Password fields and apps that don't expose their text are never read.
+
